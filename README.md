@@ -1,4 +1,4 @@
-# AthenaAssistantYAM
+﻿# AthenaAssistantYAM
 
 Приложение для Яндекс Станции 2, которое добавляет **Афину** рядом со штатной
 Алисой. Оно ставится как пакет YAM v2 и работает как локальный плагин Luna.
@@ -25,9 +25,14 @@ vqe_0 (16 kHz) ──> AthenaAssistantYAM ──> «Афина»?
 
 Команда уходит в собственный Device Gateway Афины, а не в ASR Алисы. Поэтому
 Афина не запускает и не отменяет штатный диалог, а нативное wake word «Алиса»
-остаётся полностью штатным. При wake Афина проигрывает инвертированную копию
-родной анимации `alice_listening.led` (фиолетовый становится зелёным); файлы
-анимации только читаются и не изменяются.
+остаётся полностью штатным. При wake Афина показывает три разных состояния из
+родных анимаций: слушает — зелёную `alice_listening.led`, думает — синюю
+`alice_thinking.led`, отвечает — оранжевую `alice_speaking.led`. Яркость
+слушания следует за микрофоном, яркость ответа — за громкостью TTS. Файлы
+анимации только читаются и не изменяются. Если ядро ответило вопросом, но
+прислало `listen=false`, приложение всё равно открывает окно follow-up, чтобы
+можно было ответить без повторного wake word. Звуки wake/listen/error играются
+тише штатных, TTS не приглушается.
 
 ## Требования
 
@@ -43,7 +48,7 @@ vqe_0 (16 kHz) ──> AthenaAssistantYAM ──> «Афина»?
 
    ```sh
    ./package.sh
-   # dist/athena-assistant-0.2.3.yampkg
+   # dist/athena-assistant-0.2.5.yampkg
    ```
 
    Для сборки нужны Go и Python 3 с `zstandard`. На Windows удобно собрать
@@ -59,8 +64,8 @@ vqe_0 (16 kHz) ──> AthenaAssistantYAM ──> «Афина»?
 2. Скопируйте пакет на станцию и установите:
 
    ```sh
-   adb push dist/athena-assistant-0.2.3.yampkg /data/local/tmp/
-   adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.3.yampkg"
+   adb push dist/athena-assistant-0.2.5.yampkg /data/local/tmp/
+   adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.5.yampkg"
    ```
 
    Postinstall только копирует плагин в
@@ -154,8 +159,9 @@ wake word. Штатная Алиса ведёт себя так же, когда
 - Для Афины не вызывается `START_CONVERSATION` и не используется ASR Алисы:
   команда идёт через Athena Device Gateway. Штатный диалог не стартует и не
   отменяется.
-- LED-матрица показывает инвертированную анимацию Алисы только на время цикла
-  Афины и затем возвращается в штатный режим Luna.
+- LED-матрица показывает одну из трёх инвертированных анимаций Алисы только на
+  время цикла Афины (слушание, размышление, ответ) и гарантированно гасится
+  после финального ответа, таймаута, ошибки или `utterance.drop`.
 
 ## Обновление
 
@@ -163,7 +169,7 @@ wake word. Штатная Алиса ведёт себя так же, когда
 
 ```sh
 adb shell "/data/yam/bin/yam-run remove athena/assistant"
-adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.3.yampkg"
+adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.5.yampkg"
 ```
 
 Затем `rescan` и `service/enable` (это и включает, и запускает плагин). Настройки и обученные слова лежат в

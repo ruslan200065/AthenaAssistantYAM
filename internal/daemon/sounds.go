@@ -19,14 +19,27 @@ var soundFS embed.FS
 
 const soundRate = 16000
 
+// The stock signals are quite loud on the station speaker. Lower them so they
+// stay noticeable without being harsh; TTS volume is left untouched.
+var soundGain = map[string]float64{
+	"wake":   0.42,
+	"listen": 0.50,
+	"error":  0.38,
+}
+
 func (d *Daemon) playSound(ctx context.Context, lc *luna.Client, name string) time.Duration {
 	b, err := soundFS.ReadFile("sounds/" + name + ".pcm")
 	if err != nil || len(b) < 2 {
 		return 0
 	}
+	gain := soundGain[name]
+	if gain <= 0 {
+		gain = 0.5
+	}
 	pcm := make([]int16, len(b)/2)
 	for i := range pcm {
-		pcm[i] = int16(binary.LittleEndian.Uint16(b[2*i:]))
+		v := int16(binary.LittleEndian.Uint16(b[2*i:]))
+		pcm[i] = int16(float64(v) * gain)
 	}
 	dur := time.Duration(len(pcm)) * time.Second / soundRate
 	if dur > 0 {

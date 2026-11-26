@@ -22,9 +22,10 @@ func (d *Daemon) athenaSettings() Settings {
 	return d.settings
 }
 
-// runAthena handles one wake-word hit without touching native Alice: our own
-// detector heard the word, the gateway transcribes the command and answers,
-// and Luna plays the WAV. Native Alice keeps her own wake word and dialog.
+// runAthena handles one wake-word hit without touching native Alice. The
+// first turn is a normal wake turn; every reply with listen=true opens a
+// follow-up window on the same gateway session, with the stock listen sound
+// and the LED animation again, until the core ends the dialogue.
 func (d *Daemon) runAthena(ctx context.Context) error {
 	if !d.athenaMu.TryLock() {
 		return errAthenaBusy
@@ -33,23 +34,46 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 
 	cfg := d.athenaSettings()
 	lc := luna.New(cfg.LunaURL)
-	if cfg.LEDFeedback {
-		ledCtx, ledCancel := context.WithCancel(ctx)
-		ledDone := make(chan struct{})
-		go func() {
-			defer close(ledDone)
-			d.playLEDPattern(ledCtx, lc, ledListenPattern)
-		}()
-		defer func() {
-			ledCancel()
-			<-ledDone
-			_ = lc.RingOff(context.Background())
-		}()
-	}
 
-	// Stock wake chime. Capture starts immediately, because people often
-	// start the command while the chime is still playing; the audio is
-	// buffered during the chime and only then fed to the VAD.
+	// The LED context is independent of a single turn: it is stopped
+	// explicitly before TTS, restarted for every follow-up, and cancelled on
+	// every exit path.
+	ledCtx, ledCancel := context.WithCancel(ctx)
+	defer ledCancel()
+
+	var listenShow, thinkShow *ledShow
+	startListening := func() {
+		if !cfg.LEDFeedback {
+			return
+		}
+		listenShow = d.startLEDPattern(ledCtx, lc, ledListenPattern, ledHueListen, d.micLevelValue)
+	}
+	stopListening := func() {
+		listenShow.stop(lc)
+		listenShow = nil
+	}
+	startThinking := func() {
+		if !cfg.LEDFeedback {
+			return
+		}
+		thinkShow = d.startLEDPattern(ledCtx, lc, ledThinkPattern, ledHueThink, nil)
+	}
+	stopThinking := func() {
+		thinkShow.stop(lc)
+		thinkShow = nil
+	}
+	defer stopListening()
+	defer stopThinking()
+
+	gw := gateway.New(cfg.AthenaURL, cfg.AthenaToken)
+	sess, err := gw.Open(ctx)
+	if err != nil {
+		d.playSound(context.Background(), lc, "error")
+		return err
+	}
+	defer sess.Close()
+
+	startListening()
 	d.playSound(ctx, lc, "wake")
 
 	maxCmd := time.Duration(cfg.RecognizeTimeoutSeconds) * time.Second
@@ -59,7 +83,8 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	if maxCmd > 20*time.Second {
 		maxCmd = 20 * time.Second
 	}
-	pcm, err := d.captureCommand(ctx, maxCmd, wakeSettle)
+	pcm, err := d.captureCommand(ctx, maxCmd, wakeSettle, 4*time.Second, d.setMicLevel)
+	stopListening()
 	if err != nil {
 		d.playSound(context.Background(), lc, "error")
 		return err
@@ -71,22 +96,87 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	}
 	log.Printf("athena: captured %.1f s, sending to gateway", float64(len(pcm))/float64(16000))
 
-	gw := gateway.New(cfg.AthenaURL, cfg.AthenaToken)
-	reply, err := gw.Ask(ctx, pcm)
+	startThinking()
+	reply, err := sess.Turn(ctx, pcm, false, 0)
+	stopThinking()
 	if err != nil {
 		d.playSound(context.Background(), lc, "error")
 		return err
 	}
-	if strings.TrimSpace(reply) == "" {
-		d.playSound(context.Background(), lc, "error")
-		return errors.New("athena: пустой ответ")
+
+	for {
+		log.Printf("athena: heard request, reply %q (listen=%v end=%v)", reply.Text, reply.Listen, reply.End)
+		if strings.TrimSpace(reply.Text) != "" {
+			if _, err := d.speakReply(ctx, cfg, reply.Text); err != nil {
+				d.playSound(context.Background(), lc, "error")
+				return err
+			}
+		}
+		_ = sess.PlaybackStopped(ctx)
+
+		keepListening := reply.Listen && !reply.End
+		if !keepListening && strings.HasSuffix(strings.TrimSpace(reply.Text), "?") {
+			// The core prompt asks the model to end question replies with
+			// [listen], but a model sometimes answers with a question and
+			// [end]. The user hears a question and expects to answer it, so
+			// open one follow-up window anyway; the core accepts follow_up
+			// with the same conversation id.
+			log.Printf("athena: reply is a question; opening follow-up despite listen=false")
+			keepListening = true
+		}
+		if !keepListening {
+			_ = sess.EndConversation(ctx, reply.ConversationID)
+			return nil
+		}
+
+		followFor := time.Duration(reply.FollowUpTimeoutSeconds) * time.Second
+		if followFor <= 0 {
+			followFor = 8 * time.Second
+		}
+		if followFor < 3*time.Second {
+			followFor = 3 * time.Second
+		}
+		if followFor > 30*time.Second {
+			followFor = 30 * time.Second
+		}
+		log.Printf("athena: listening for follow-up (%.0f s)", followFor.Seconds())
+
+		startListening()
+		listenFor := d.playSound(ctx, lc, "listen")
+		settle := listenFor + 100*time.Millisecond
+		if settle < 300*time.Millisecond {
+			settle = 300 * time.Millisecond
+		}
+		pcm, err = d.captureCommand(ctx, followFor, settle, followFor, d.setMicLevel)
+		stopListening()
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("athena: follow-up capture: %v", err)
+			}
+			_ = sess.EndConversation(context.Background(), reply.ConversationID)
+			return nil
+		}
+		if len(pcm) == 0 {
+			log.Printf("athena: follow-up window closed, nobody spoke")
+			_ = sess.EndConversation(context.Background(), reply.ConversationID)
+			return nil
+		}
+		log.Printf("athena: captured follow-up %.1f s", float64(len(pcm))/float64(16000))
+		convID := reply.ConversationID
+		startThinking()
+		reply, err = sess.Turn(ctx, pcm, true, convID)
+		stopThinking()
+		if err != nil {
+			var drop *gateway.DropError
+			if errors.As(err, &drop) {
+				log.Printf("athena: follow-up dropped: %s", drop.Reason)
+			} else {
+				log.Printf("athena: follow-up: %v", err)
+			}
+			_ = sess.EndConversation(context.Background(), convID)
+			return nil
+		}
 	}
-	log.Printf("athena: heard request, reply %q", reply)
-	if err := d.speakReply(ctx, cfg, reply); err != nil {
-		d.playSound(context.Background(), lc, "error")
-		return err
-	}
-	return nil
 }
 
 // AskAthena is used by the test endpoint: it bypasses wake-word recognition.
@@ -116,29 +206,45 @@ func (d *Daemon) askAthena(ctx context.Context, cfg Settings, text string) error
 		return nil
 	}
 	log.Printf("athena: reply %q (%.0f ms)", resp.Reply, float64(resp.LatencyMS))
-	return d.speakReply(ctx, cfg, resp.Reply)
+	_, err = d.speakReply(ctx, cfg, resp.Reply)
+	return err
 }
 
-func (d *Daemon) speakReply(ctx context.Context, cfg Settings, reply string) error {
+// speakReply synthesizes the answer, runs the inverted speaking animation for
+// the real playback duration, and waits for Luna to finish playing. The
+// caller can then send playback.stopped to the core and open a follow-up.
+func (d *Daemon) speakReply(ctx context.Context, cfg Settings, reply string) (time.Duration, error) {
 	if cfg.MuteReplies {
-		return nil
+		return 0, nil
 	}
 	ac := athena.New(cfg.AthenaURL, cfg.AthenaToken)
 	pcm, rate, err := ac.TTS(ctx, reply, cfg.TTSVoice)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(pcm) == 0 {
-		return errors.New("athena: tts returned no audio")
+		return 0, errors.New("athena: tts returned no audio")
 	}
 	playFor := time.Duration(len(pcm)) * time.Second / time.Duration(rate)
 	d.muteDetection(playFor + time.Second)
 	lc := luna.New(cfg.LunaURL)
+
+	var show *ledShow
+	if cfg.LEDFeedback {
+		show = d.startLEDPattern(ctx, lc, ledSpeakPattern, ledHueSpeak, speechLevel(pcm, rate))
+	}
+	defer show.stop(lc)
+
 	if err := lc.PlayWAV(ctx, wav.Encode(pcm, rate)); err != nil {
-		return err
+		return 0, err
 	}
 	log.Printf("athena: playing %d Hz, %.1f s", rate, float64(len(pcm))/float64(rate))
-	return nil
+	select {
+	case <-time.After(playFor + 500*time.Millisecond):
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+	return playFor, nil
 }
 
 func (d *Daemon) athenaConfigView() map[string]any {

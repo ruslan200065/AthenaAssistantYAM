@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ruslan200065/AthenaAssistantYAM/internal/luna"
@@ -16,8 +18,13 @@ import (
 const (
 	ledPatternDir    = "/system/vendor/quasar/ledpatterns/panel"
 	ledListenPattern = ledPatternDir + "/alice_listening.led"
+	ledThinkPattern  = ledPatternDir + "/alice_thinking.led"
+	ledSpeakPattern  = ledPatternDir + "/alice_speaking.led"
 	ledCount         = 89
 	ledFrameGap      = 20 * time.Millisecond
+	ledHueListen     = 0.33 // green
+	ledHueThink      = 0.60 // blue
+	ledHueSpeak      = 0.08 // warm orange
 )
 
 type ledFrame struct {
@@ -26,8 +33,9 @@ type ledFrame struct {
 }
 
 // loadLEDPattern reads a native Quasar panel animation. Each frame is a line
-// of 84 RGBA colours followed by a delay in milliseconds.
-func loadLEDPattern(path string) ([]ledFrame, error) {
+// of 84 RGBA colours followed by a delay in milliseconds. hue replaces the
+// native violet with a state colour while keeping saturation and brightness.
+func loadLEDPattern(path string, hue float64) ([]ledFrame, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -64,7 +72,7 @@ func loadLEDPattern(path string) ([]ledFrame, error) {
 				colors = nil
 				break
 			}
-			ir, ig, ib := invertRGB(uint8(r), uint8(g), uint8(b))
+			ir, ig, ib := recolorRGB(uint8(r), uint8(g), uint8(b), hue)
 			colors = append(colors, fmt.Sprintf("#%02X%02X%02X", ir, ig, ib))
 		}
 		if len(colors) == 0 {
@@ -81,9 +89,9 @@ func loadLEDPattern(path string) ([]ledFrame, error) {
 	return frames, nil
 }
 
-// invertRGB rotates hue by 180 degrees while keeping saturation and value.
-// Black stays black, so the panel background does not become a white wall.
-func invertRGB(r, g, b uint8) (uint8, uint8, uint8) {
+// recolorRGB replaces the hue while keeping saturation and value. Black stays
+// black, so the panel background does not become a coloured wall.
+func recolorRGB(r, g, b uint8, hue float64) (uint8, uint8, uint8) {
 	rf, gf, bf := float64(r)/255, float64(g)/255, float64(b)/255
 	max := rf
 	if gf > max {
@@ -102,47 +110,40 @@ func invertRGB(r, g, b uint8) (uint8, uint8, uint8) {
 	if max == min {
 		return r, g, b
 	}
-	d := max - min
-	var h float64
-	switch max {
-	case rf:
-		h = (gf - bf) / d
-		if gf < bf {
-			h += 6
-		}
-	case gf:
-		h = (bf-rf)/d + 2
-	default:
-		h = (rf-gf)/d + 4
+	return hsvToRGB(hue, (max-min)/max, max)
+}
+
+func hsvToRGB(h, s, v float64) (uint8, uint8, uint8) {
+	h = math.Mod(h, 1)
+	if h < 0 {
+		h++
 	}
-	h /= 6
-	h += 0.5
-	if h >= 1 {
-		h -= 1
-	}
-	s := d / max
-	v := max
 	i := int(h * 6)
 	f := h*6 - float64(i)
 	p := v * (1 - s)
 	q := v * (1 - s*f)
 	t := v * (1 - s*(1-f))
-	var nr, ng, nb float64
+	var r, g, b float64
 	switch i % 6 {
 	case 0:
-		nr, ng, nb = v, t, p
+		r, g, b = v, t, p
 	case 1:
-		nr, ng, nb = q, v, p
+		r, g, b = q, v, p
 	case 2:
-		nr, ng, nb = p, v, t
+		r, g, b = p, v, t
 	case 3:
-		nr, ng, nb = p, q, v
+		r, g, b = p, q, v
 	case 4:
-		nr, ng, nb = t, p, v
+		r, g, b = t, p, v
 	default:
-		nr, ng, nb = v, p, q
+		r, g, b = v, p, q
 	}
-	return uint8(nr*255 + 0.5), uint8(ng*255 + 0.5), uint8(nb*255 + 0.5)
+	return uint8(r*255 + 0.5), uint8(g*255 + 0.5), uint8(b*255 + 0.5)
+}
+
+func hueColor(hue float64) string {
+	r, g, b := hsvToRGB(hue, 0.85, 1)
+	return fmt.Sprintf("#%02X%02X%02X", r, g, b)
 }
 
 func fitLEDColors(src []string, n int) []string {
@@ -157,21 +158,106 @@ func fitLEDColors(src []string, n int) []string {
 	return out
 }
 
-// playLEDPattern loops the inverted native listening animation until cancel.
-func (d *Daemon) playLEDPattern(ctx context.Context, lc *luna.Client, path string) {
-	frames, err := loadLEDPattern(path)
-	if err != nil {
-		log.Printf("led: %v; using solid blue", err)
-		_ = lc.SetRing(ctx, []string{"#2E7DFF"})
+type ledShow struct {
+	cancel   context.CancelFunc
+	done     chan struct{}
+	stopOnce sync.Once
+}
+
+// startLEDPattern runs a recoloured native animation until stop is called.
+// level, when non-nil, is sampled for every frame and scales brightness, so
+// the panel follows the microphone or the TTS voice instead of looping at a
+// fixed brightness.
+func (d *Daemon) startLEDPattern(ctx context.Context, lc *luna.Client, path string, hue float64, level func() float64) *ledShow {
+	ledCtx, cancel := context.WithCancel(ctx)
+	show := &ledShow{cancel: cancel, done: make(chan struct{})}
+	log.Printf("led: start pattern hue=%.2f", hue)
+	go func() {
+		defer close(show.done)
+		d.playLEDPattern(ledCtx, lc, path, hue, level)
+	}()
+	return show
+}
+
+func (s *ledShow) stop(lc *luna.Client) {
+	if s == nil {
 		return
 	}
-	for {
-		for _, frame := range frames {
+	s.stopOnce.Do(func() {
+		s.cancel()
+		<-s.done
+		if err := lc.RingOff(context.Background()); err != nil {
+			log.Printf("led: ring off: %v", err)
+			clearLEDFramebuffer()
+		}
+	})
+}
+
+// clearLEDFramebuffer blanks the Station 2 RGBW framebuffer. Luna refuses to
+// paint when the framebuffer still belongs to firmware or another indicator;
+// a blank frame transfers ownership back to Luna.
+func clearLEDFramebuffer() {
+	f, err := os.OpenFile("/dev/fb0", os.O_WRONLY, 0)
+	if err != nil {
+		log.Printf("led: open fb0: %v", err)
+		return
+	}
+	defer f.Close()
+	if _, err := f.Write(make([]byte, ledCount*4)); err != nil {
+		log.Printf("led: clear fb0: %v", err)
+	}
+}
+
+// playLEDPattern loops the recoloured native animation until cancel.
+func (d *Daemon) playLEDPattern(ctx context.Context, lc *luna.Client, path string, hue float64, level func() float64) {
+	clearLEDFramebuffer()
+	frames, err := loadLEDPattern(path, hue)
+	if err != nil {
+		fallback := hueColor(hue)
+		log.Printf("led: %v; using solid %s", err, fallback)
+		for {
 			if ctx.Err() != nil {
 				return
 			}
-			if err := lc.SetRing(ctx, fitLEDColors(frame.colors, ledCount)); err != nil {
+			_ = lc.SetRing(ctx, scaleLEDColors([]string{fallback}, ledLevel(level)))
+			t := time.NewTimer(100 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				t.Stop()
 				return
+			case <-t.C:
+			}
+		}
+	}
+	first := true
+	sentColor := false
+	frameNo := 0
+	for {
+		for _, frame := range frames {
+			frameNo++
+			if ctx.Err() != nil {
+				return
+			}
+			colors := fitLEDColors(frame.colors, ledCount)
+			lv := ledLevel(level)
+			colors = scaleLEDColors(colors, lv)
+			if first {
+				log.Printf("led: first frame color=%s level=%.2f", colors[0], lv)
+				first = false
+			}
+			if frameNo <= 5 {
+				log.Printf("led: frame %d colors=%s ctx=%v", frameNo, colors[0], ctx.Err())
+			}
+			if err := lc.SetRing(ctx, colors); err != nil {
+				log.Printf("led: set ring: %v", err)
+				return
+			}
+			if frameNo <= 5 {
+				log.Printf("led: frame %d sent", frameNo)
+			}
+			if !sentColor && colors[0] != "#000000" {
+				log.Printf("led: colored frame sent %s", colors[0])
+				sentColor = true
 			}
 			t := time.NewTimer(frame.delay)
 			select {
@@ -181,5 +267,86 @@ func (d *Daemon) playLEDPattern(ctx context.Context, lc *luna.Client, path strin
 			case <-t.C:
 			}
 		}
+	}
+}
+
+// ledLevel keeps a dim baseline in silence and lets the current voice or
+// microphone level drive the rest of the brightness.
+func ledLevel(level func() float64) float64 {
+	if level == nil {
+		return 1
+	}
+	v := level()
+	if v < 0 {
+		v = 0
+	}
+	if v > 1 {
+		v = 1
+	}
+	return 0.25 + 0.75*v
+}
+
+func scaleLEDColors(colors []string, k float64) []string {
+	if k >= 1 {
+		return colors
+	}
+	if k < 0 {
+		k = 0
+	}
+	out := make([]string, len(colors))
+	for i, c := range colors {
+		if len(c) != 7 || c[0] != '#' {
+			out[i] = c
+			continue
+		}
+		r, err1 := strconv.ParseUint(c[1:3], 16, 8)
+		g, err2 := strconv.ParseUint(c[3:5], 16, 8)
+		b, err3 := strconv.ParseUint(c[5:7], 16, 8)
+		if err1 != nil || err2 != nil || err3 != nil {
+			out[i] = c
+			continue
+		}
+		out[i] = fmt.Sprintf("#%02X%02X%02X",
+			uint8(float64(r)*k+0.5), uint8(float64(g)*k+0.5), uint8(float64(b)*k+0.5))
+	}
+	return out
+}
+
+// speechLevel returns a 0..1 envelope sampled from the TTS PCM. The animation
+// is started just before playback, so time.Since(start) tracks the voice.
+func speechLevel(pcm []int16, rate int) func() float64 {
+	const winMS = 20
+	if rate <= 0 {
+		rate = 16000
+	}
+	win := rate * winMS / 1000
+	if win < 1 {
+		win = 1
+	}
+	levels := make([]float64, 0, len(pcm)/win+1)
+	var maxRMS float64
+	for off := 0; off < len(pcm); off += win {
+		end := min(off+win, len(pcm))
+		var sum float64
+		for _, s := range pcm[off:end] {
+			f := float64(s) / 32768
+			sum += f * f
+		}
+		rms := math.Sqrt(sum / float64(end-off))
+		levels = append(levels, rms)
+		if rms > maxRMS {
+			maxRMS = rms
+		}
+	}
+	start := time.Now()
+	return func() float64 {
+		if len(levels) == 0 || maxRMS <= 0 {
+			return 0.5
+		}
+		idx := int(time.Since(start).Milliseconds() / winMS)
+		if idx < 0 || idx >= len(levels) {
+			return 0
+		}
+		return math.Min(1, levels[idx]/maxRMS)
 	}
 }

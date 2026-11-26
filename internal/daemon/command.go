@@ -23,7 +23,7 @@ const wakeSettle = 800 * time.Millisecond
 // detector's gain is applied only for VAD decisions. settle covers the wake
 // chime: audio during it is ignored so the chime is not mistaken for speech
 // and is not sent to the recognizer. Returns nil when nobody speaks.
-func (d *Daemon) captureCommand(ctx context.Context, max, settle time.Duration) ([]int16, error) {
+func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.Duration, onLevel func(float64)) ([]int16, error) {
 	d.mu.Lock()
 	ok := d.audioOK
 	gain := d.settings.Gain
@@ -37,11 +37,18 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle time.Duration) 
 
 	ch := d.rawAudio.add(128)
 	defer d.rawAudio.remove(ch)
+	if onLevel != nil {
+		onLevel(0)
+		defer onLevel(0)
+	}
 
 	buf := make([]int16, 0, kws.SampleRate*20)
 	start := time.Now()
 	settleUntil := start.Add(settle)
-	waitSpeech := 4 * time.Second
+	waitSpeech := waitFor
+	if waitSpeech <= 0 {
+		waitSpeech = 4 * time.Second
+	}
 	if max < waitSpeech {
 		waitSpeech = max
 	}
@@ -68,6 +75,9 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle time.Duration) 
 			}
 			buf = append(buf, pcm...)
 			rms := rmsOf(pcm) * gain
+			if onLevel != nil {
+				onLevel(math.Min(1, rms*8))
+			}
 			ms := len(pcm) * 1000 / kws.SampleRate
 			if ms <= 0 {
 				continue

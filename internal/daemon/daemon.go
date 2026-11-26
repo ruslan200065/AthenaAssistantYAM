@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ruslan200065/AthenaAssistantYAM/internal/kws"
@@ -89,25 +90,26 @@ type Daemon struct {
 	audioCancel context.CancelFunc
 	audioGen    int
 
-	mu       sync.Mutex
-	settings Settings
-	words    []word
-	det      *kws.Detector
-	detWords []string // word id per detector model
-	paused   int      // >0 while enrolling: no detection
-	ring     *ring
-	level    float64 // dBFS of the last chunk
-	audioOK  bool
-	audioErr string
-	capture  *capture
-	hits     []*Hit
-	hitSeq   int
-	enroll   *enrollment
-	train    trainState
-	name     cachedName
-	events   subscribers[hitEvent]
-	audio    subscribers[[]int16]
-	rawAudio subscribers[[]int16]
+	mu          sync.Mutex
+	settings    Settings
+	words       []word
+	det         *kws.Detector
+	detWords    []string // word id per detector model
+	paused      int      // >0 while enrolling: no detection
+	ring        *ring
+	level       float64       // dBFS of the last chunk
+	micLevelVal atomic.Uint32 // 0..1000, used by the listening LED animation
+	audioOK     bool
+	audioErr    string
+	capture     *capture
+	hits        []*Hit
+	hitSeq      int
+	enroll      *enrollment
+	train       trainState
+	name        cachedName
+	events      subscribers[hitEvent]
+	audio       subscribers[[]int16]
+	rawAudio    subscribers[[]int16]
 
 	// Playback guard: while our beep/TTS is sounding, the detector must not
 	// hear the station itself. The detector is reset on both edges so a
@@ -504,6 +506,20 @@ func wordID(name string) string {
 		s = "word"
 	}
 	return s
+}
+
+func (d *Daemon) setMicLevel(v float64) {
+	if v < 0 {
+		v = 0
+	}
+	if v > 1 {
+		v = 1
+	}
+	d.micLevelVal.Store(uint32(v * 1000))
+}
+
+func (d *Daemon) micLevelValue() float64 {
+	return float64(d.micLevelVal.Load()) / 1000
 }
 
 func readWAVs(paths []string) ([][]int16, error) {
