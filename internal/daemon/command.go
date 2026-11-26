@@ -20,9 +20,9 @@ const wakeSettle = 800 * time.Millisecond
 
 // captureCommand waits for one spoken command after a wake hit. It listens to
 // the unamplified microphone bus, so cloud STT gets clean 16-bit PCM; the
-// detector's gain is applied only for VAD decisions. settle is the audible
-// part of the wake chime: audio is buffered during it, but its echo must not
-// end the command or start the VAD. Returns nil when nobody speaks.
+// detector's gain is applied only for VAD decisions. settle covers the wake
+// chime: audio during it is ignored so the chime is not mistaken for speech
+// and is not sent to the recognizer. Returns nil when nobody speaks.
 func (d *Daemon) captureCommand(ctx context.Context, max, settle time.Duration) ([]int16, error) {
 	d.mu.Lock()
 	ok := d.audioOK
@@ -63,10 +63,10 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle time.Duration) 
 			}
 			return normalizeCommand(trimCommand(buf)), nil
 		case pcm := <-ch:
-			buf = append(buf, pcm...)
 			if time.Now().Before(settleUntil) {
 				continue
 			}
+			buf = append(buf, pcm...)
 			rms := rmsOf(pcm) * gain
 			ms := len(pcm) * 1000 / kws.SampleRate
 			if ms <= 0 {
