@@ -24,8 +24,13 @@ const (
 )
 
 const (
-	ledAnimFrame  = 33 * time.Millisecond
-	ledTransition = 420 * time.Millisecond
+	ledAnimFrame        = 33 * time.Millisecond
+	ledTransition       = 420 * time.Millisecond
+	ledMatrixWidth      = 12
+	ledMatrixHeight     = 7
+	ledMatrixSerpentine = false // true if alternate rows are wired backwards
+	ledMatrixFlipX      = false
+	ledMatrixFlipY      = false
 )
 
 var errLEDForeign = errors.New("led: another writer owns the framebuffer")
@@ -237,64 +242,82 @@ func ledFadeOut(generation uint64) {
 	}
 }
 
-// animationFrame returns one frame for the Station 2 ring. The station has 89
-// RGBW LEDs arranged in a circle; the source animation was written for a 12x7
-// matrix, so the matrix effects are translated to circular waves, comets and
-// ribbons here. Music stays one-dimensional and uses all 89 LEDs.
+// animationFrame preserves the hardware buffer length. The first 84 pixels
+// form the 12x7 top panel; the remaining five pixels are the separate oknix
+// element and stay black in voice modes. Music uses all 89 physical LEDs.
 func animationFrame(mode ledMode, t, level float64) []string {
 	out := ledBlackFrame()
 	level = clamp01(level)
 	for i := range out {
-		a := 2 * math.Pi * float64(i) / float64(ledCount)
-		x := float64(i) / float64(ledCount)
+		if mode == ledMusic {
+			a := 2 * math.Pi * float64(i) / float64(ledCount)
+			x := float64(i) / float64(ledCount)
+			beat := math.Exp(-7 * frac(t*1.9))
+			w1 := .5 + .5*math.Sin(6*a-5*t)
+			w2 := .5 + .5*math.Sin(3*a+2.2*t)
+			spark := math.Pow(math.Max(0, math.Sin(2*math.Pi*(x*5.7+t*1.25))), 22)
+			out[i] = hsvString(frac(x+.08*t), .92, clamp01(.10+.20*w1+.26*beat+.18*w1*w2+.45*spark*(.35+beat)))
+			continue
+		}
+		x, y, ok := ledMatrixXY(i)
+		if !ok {
+			continue
+		}
+		r := math.Hypot(x, y)
 		var h, s, v float64
 		switch mode {
-		case ledListen: // two sonar pulses travelling around the ring
+		case ledListen: // L1: sonar
 			p := frac(t * .65)
-			p1 := p
-			p2 := frac(p + .55)
-			ring := ledBell(ringDist(x, p1), .030+.014*level)
-			ring2 := .45 * ledBell(ringDist(x, p2), .026+.011*level)
-			core := ledBell(ringDist(x, p1), .35+.20*level)
-			h = (184 + 22*clamp01(ring+ring2)) / 360
+			ring := ledBell(r-p*2.1, .19+.12*level)
+			ring2 := .45 * ledBell(r-frac(p+.55)*2.1, .17)
+			core := ledBell(r, .38+.22*level)
+			h = (184 + 22*clamp01(r/2)) / 360
 			s = .90
 			v = .025 + (.48+.50*level)*ring + ring2 + core*(.15+.38*level)
-		case ledThink: // two orbiting comets with fading tails
+		case ledThink: // T1: two orbiting comets, with fading tails
 			q := t * 1.85
 			p1, p2 := 0.0, 0.0
 			for k := 0; k < 9; k++ {
 				u := q - float64(k)*.17
 				w := math.Pow(1-float64(k)/10, 2)
-				pos1 := frac(u / (2 * math.Pi))
-				pos2 := frac(u/(2*math.Pi) + .5)
-				p1 = math.Max(p1, w*ledBell(ringDist(x, pos1), .026))
-				p2 = math.Max(p2, w*ledBell(ringDist(x, pos2), .026))
+				p1 = math.Max(p1, w*ledBell(math.Hypot(x-1.25*math.Cos(u), y-.68*math.Sin(u)), .27))
+				p2 = math.Max(p2, w*ledBell(math.Hypot(x-1.25*math.Cos(u+math.Pi), y-.68*math.Sin(u+math.Pi)), .27))
 			}
+			path := ledBell(math.Hypot(x/1.25, y/.68)-1, .12)
 			h = ledMix(186, 269, p2/(p1+p2+.001)) / 360
 			s = .95 - .56*math.Max(p1, p2)
-			v = .018 + .98*p1 + .86*p2
-		case ledSpeak: // two audio-reactive aurora ribbons
-			p1 := frac(t * .20)
-			p2 := frac(.55 - t*.13)
-			b1 := ledBell(ringDist(x, p1), .090+.065*level)
-			b2 := ledBell(ringDist(x, p2), .105+.050*level)
-			h = ledMix(163, 284, b2/(b1+b2+.001)) / 360
-			s = .92 - .52*math.Min(b1, b2)
-			v = .018 + (.35+.57*level)*b1 + (.31+.50*level)*b2
-		case ledMusic: // rotating rainbow with a synthetic beat and sparkles
-			beat := math.Exp(-7 * frac(t*1.9))
-			w1 := .5 + .5*math.Sin(6*a-5*t)
-			w2 := .5 + .5*math.Sin(3*a+2.2*t)
-			spark := math.Pow(math.Max(0, math.Sin(2*math.Pi*(x*5.7+t*1.25))), 22)
-			h = frac(x + .08*t)
-			s = .92
-			v = clamp01(.10 + .20*w1 + .26*beat + .18*w1*w2 + .45*spark*(.35+beat))
+			v = .018 + .11*path + .98*p1 + .86*p2 + .12*ledBell(r, .25)
+		case ledSpeak: // S3: two audio-reactive aurora ribbons
+			w1 := .42*math.Sin(x*2.5+t*2.7) + .10*math.Cos(x*5-t*4)
+			w2 := -.32*math.Cos(x*2.3-t*1.9) - .23
+			p1 := ledBell(y-w1, .18+.22*level)
+			p2 := .8 * ledBell(y-w2, .20+.13*level)
+			h = ledMix(163, 284, p2/(p1+p2+.001)) / 360
+			s = .92 - .52*math.Min(p1, p2)
+			v = .018 + (.35+.57*level)*p1 + (.31+.50*level)*p2
 		default:
 			continue
 		}
 		out[i] = hsvString(h, clamp01(s), clamp01(v))
 	}
 	return out
+}
+
+func ledMatrixXY(i int) (float64, float64, bool) {
+	if i < 0 || i >= ledMatrixWidth*ledMatrixHeight {
+		return 0, 0, false
+	}
+	row, col := i/ledMatrixWidth, i%ledMatrixWidth
+	if ledMatrixSerpentine && row%2 == 1 {
+		col = ledMatrixWidth - 1 - col
+	}
+	if ledMatrixFlipX {
+		col = ledMatrixWidth - 1 - col
+	}
+	if ledMatrixFlipY {
+		row = ledMatrixHeight - 1 - row
+	}
+	return (float64(col) - float64(ledMatrixWidth-1)/2) / 3.6, (float64(row) - float64(ledMatrixHeight-1)/2) / 3.6, true
 }
 
 func ledBlackFrame() []string {
