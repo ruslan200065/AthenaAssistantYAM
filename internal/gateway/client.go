@@ -100,6 +100,8 @@ type event struct {
 	End                    bool            `json:"end"`
 	ConversationState      string          `json:"conversation_state"`
 	FollowUpTimeoutSeconds int             `json:"follow_up_timeout_seconds"`
+	WaitForSpeechSeconds   float64         `json:"wait_for_speech_seconds"`
+	SampleRate             int             `json:"sample_rate"`
 	Reason                 string          `json:"reason"`
 	Code                   string          `json:"code"`
 	Message                string          `json:"message"`
@@ -124,8 +126,17 @@ type DropError struct{ Reason string }
 
 func (e *DropError) Error() string { return "gateway: запрос отклонён: " + e.Reason }
 
+// Ack is the core's answer to audio.start. The station must keep the
+// microphone open for WaitForSpeechSeconds before the user starts talking.
+type Ack struct {
+	UtteranceID          string
+	SampleRate           int
+	WaitForSpeechSeconds float64
+}
+
 type Session struct {
-	conn *websocket.Conn
+	conn    *websocket.Conn
+	pending string // utterance id after BeginTurn, before SendTurn
 }
 
 // Open dials the gateway and completes hello/welcome. Keep the returned
@@ -176,15 +187,15 @@ func (c *Client) Open(ctx context.Context) (*Session, error) {
 	return &Session{conn: conn}, nil
 }
 
-// Turn uploads one utterance and returns assistant.reply. followUp must be
-// true for every phrase after the first; conversationID continues the same
-// core dialogue.
-func (s *Session) Turn(ctx context.Context, pcm []int16, followUp bool, conversationID int64) (*Reply, error) {
+// BeginTurn opens one utterance and waits for listen.ack. It must be called
+// before local capture: the ack carries wait_for_speech_seconds, which tells
+// the station how long the user may take to start talking.
+func (s *Session) BeginTurn(ctx context.Context, followUp bool, conversationID int64) (*Ack, error) {
 	if s.conn == nil {
 		return nil, errors.New("gateway: сессия закрыта")
 	}
-	if len(pcm) == 0 {
-		return nil, errors.New("gateway: нет аудио")
+	if s.pending != "" {
+		return nil, errors.New("gateway: предыдущий ход ещё не отправлен")
 	}
 	id := fmt.Sprintf("u-%d", time.Now().UnixNano())
 
@@ -202,6 +213,53 @@ func (s *Session) Turn(ctx context.Context, pcm []int16, followUp bool, conversa
 	if err := s.conn.WriteJSON(start); err != nil {
 		return nil, fmt.Errorf("gateway: audio.start: %w", err)
 	}
+
+	_ = s.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	for {
+		var ev event
+		if err := s.conn.ReadJSON(&ev); err != nil {
+			return nil, fmt.Errorf("gateway: ожидание listen.ack: %w", err)
+		}
+		if ev.UtteranceID != "" && ev.UtteranceID != id {
+			continue
+		}
+		switch ev.Type {
+		case "listen.ack":
+			_ = s.conn.SetReadDeadline(time.Time{})
+			s.pending = id
+			wait := ev.WaitForSpeechSeconds
+			if wait <= 0 {
+				wait = 10
+			}
+			return &Ack{
+				UtteranceID:          id,
+				SampleRate:           ev.SampleRate,
+				WaitForSpeechSeconds: wait,
+			}, nil
+		case "conversation.end":
+			return nil, &DropError{Reason: firstNonEmpty(ev.Reason, "conversation_end")}
+		case "utterance.drop":
+			return nil, &DropError{Reason: firstNonEmpty(ev.Reason, "unknown")}
+		case "assistant.error", "error":
+			return nil, fmt.Errorf("gateway: %s: %s", firstNonEmpty(ev.Code, "error"), ev.Message)
+		}
+	}
+}
+
+// SendTurn streams the captured PCM for the utterance opened by BeginTurn and
+// waits for assistant.reply.
+func (s *Session) SendTurn(ctx context.Context, pcm []int16) (*Reply, error) {
+	if s.conn == nil {
+		return nil, errors.New("gateway: сессия закрыта")
+	}
+	if s.pending == "" {
+		return nil, errors.New("gateway: нет открытого хода")
+	}
+	if len(pcm) == 0 {
+		return nil, errors.New("gateway: нет аудио")
+	}
+	id := s.pending
+	defer func() { s.pending = "" }()
 
 	// 20 ms at 16 kHz = 320 samples = 640 bytes, the documented chunk size.
 	const chunk = 320
@@ -263,6 +321,29 @@ func (s *Session) Turn(ctx context.Context, pcm []int16, followUp bool, conversa
 			// Not needed: the station synthesizes and plays its own TTS.
 		}
 	}
+}
+
+// AbortTurn closes an open utterance without sending speech. The core sees an
+// empty audio.end and can close the dialogue cleanly; the socket stays usable.
+func (s *Session) AbortTurn(ctx context.Context) error {
+	if s.conn == nil || s.pending == "" {
+		return nil
+	}
+	id := s.pending
+	s.pending = ""
+	level := 0.0
+	_ = s.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	return s.conn.WriteJSON(audioEnd{Type: "audio.end", UtteranceID: id, Level: &level})
+}
+
+// Turn is the simple one-shot helper: open the utterance, immediately send
+// the already-captured PCM, and read the reply. Callers that need the ack's
+// wait_for_speech_seconds should use BeginTurn + SendTurn instead.
+func (s *Session) Turn(ctx context.Context, pcm []int16, followUp bool, conversationID int64) (*Reply, error) {
+	if _, err := s.BeginTurn(ctx, followUp, conversationID); err != nil {
+		return nil, err
+	}
+	return s.SendTurn(ctx, pcm)
 }
 
 // PlaybackStopped tells the core that our TTS finished. The core then ends

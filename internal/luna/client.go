@@ -220,6 +220,57 @@ func (c *Client) RingOff(ctx context.Context) error {
 	return nil
 }
 
+// MediaProvider is one package-owned player from GET /api/media.
+type MediaProvider struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	State     string `json:"state"`
+	Available bool   `json:"available"`
+}
+
+// MediaStatus is the current provider list. Selected is empty when no player
+// has been chosen yet.
+type MediaStatus struct {
+	Selected  string          `json:"selected"`
+	Providers []MediaProvider `json:"providers"`
+}
+
+// Playing reports whether any available media provider is playing music.
+func (m MediaStatus) Playing() bool {
+	for _, p := range m.Providers {
+		if p.Available && p.State == "playing" {
+			return true
+		}
+	}
+	return false
+}
+
+// Media reads the local media provider state. It is used only to choose an LED
+// animation; playback itself stays entirely inside local.sendspin.
+func (c *Client) Media(ctx context.Context) (MediaStatus, error) {
+	var st MediaStatus
+	if c.BaseURL == "" {
+		return st, errors.New("luna: base URL is empty")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/media", nil)
+	if err != nil {
+		return st, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return st, fmt.Errorf("luna media: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return st, fmt.Errorf("luna media: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		return st, fmt.Errorf("luna media: %w", err)
+	}
+	return st, nil
+}
+
 // Health checks the local Luna API and returns its HTTP status.
 func (c *Client) Health(ctx context.Context) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/device", nil)

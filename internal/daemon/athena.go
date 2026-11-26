@@ -35,6 +35,11 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	cfg := d.athenaSettings()
 	lc := luna.New(cfg.LunaURL)
 
+	// Athena owns the ring for the whole turn: music/idle animations yield at
+	// once, and the panel is cleared before they are allowed back.
+	d.beginAthenaLED()
+	defer d.endAthenaLED()
+
 	// Never leave the matrix lit when the turn exits for any reason.
 	defer func() {
 		if cfg.LEDFeedback {
@@ -53,7 +58,7 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 		if !cfg.LEDFeedback {
 			return
 		}
-		listenShow = d.startLEDPattern(ledCtx, lc, ledListenPattern, ledHueListen, d.micLevelValue)
+		listenShow = d.startLEDAnimation(ledCtx, ledListen, d.micLevelValue, false, false)
 	}
 	stopListening := func() {
 		listenShow.stop(lc)
@@ -63,7 +68,7 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 		if !cfg.LEDFeedback {
 			return
 		}
-		thinkShow = d.startLEDPattern(ledCtx, lc, ledThinkPattern, ledHueThink, nil)
+		thinkShow = d.startLEDAnimation(ledCtx, ledThink, nil, false, false)
 	}
 	stopThinking := func() {
 		thinkShow.stop(lc)
@@ -83,29 +88,51 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	startListening()
 	d.playSound(ctx, lc, "wake")
 
-	maxCmd := time.Duration(cfg.RecognizeTimeoutSeconds) * time.Second
-	if maxCmd < 5*time.Second {
-		maxCmd = 5 * time.Second
+	// Open the utterance before capturing: listen.ack carries
+	// wait_for_speech_seconds, so the microphone stays open exactly as long as
+	// the core expects instead of an arbitrary local 4 seconds.
+	ack, err := sess.BeginTurn(ctx, false, 0)
+	if err != nil {
+		if isWakeLost(err) {
+			d.wakeLost(ctx, cfg)
+			return nil
+		}
+		d.athenaError(ctx, lc, cfg)
+		return err
 	}
-	if maxCmd > 20*time.Second {
-		maxCmd = 20 * time.Second
+	waitFor := time.Duration(ack.WaitForSpeechSeconds * float64(time.Second))
+	if waitFor <= 0 {
+		waitFor = 10 * time.Second
 	}
-	pcm, err := d.captureCommand(ctx, maxCmd, wakeSettle, 4*time.Second, d.setMicLevel)
+	maxSpeech := time.Duration(cfg.RecognizeTimeoutSeconds) * time.Second
+	if maxSpeech < 10*time.Second {
+		maxSpeech = 10 * time.Second
+	}
+	if maxSpeech > 30*time.Second {
+		maxSpeech = 30 * time.Second
+	}
+	maxCmd := wakeSettle + waitFor + maxSpeech
+	log.Printf("athena: waiting up to %.0f s for speech (ack)", waitFor.Seconds())
+
+	pcm, err := d.captureCommand(ctx, maxCmd, wakeSettle, waitFor, d.setMicLevel)
 	stopListening()
 	if err != nil {
+		_ = sess.AbortTurn(context.Background())
 		d.athenaError(ctx, lc, cfg)
 		return err
 	}
 	if len(pcm) == 0 {
-		// Nobody spoke. This is not an error: do not play the error sound and
-		// do not flash red, just let the deferred cleanup turn the panel off.
+		// Nobody spoke. This is not an error: close the empty utterance, do not
+		// play the error sound and do not flash red.
 		log.Printf("athena: no speech recognized")
+		_ = sess.AbortTurn(context.Background())
+		_ = sess.EndConversation(context.Background(), 0)
 		return nil
 	}
 	log.Printf("athena: captured %.1f s, sending to gateway", float64(len(pcm))/float64(16000))
 
 	startThinking()
-	reply, err := sess.Turn(ctx, pcm, false, 0)
+	reply, err := sess.SendTurn(ctx, pcm)
 	stopThinking()
 	if err != nil {
 		if isWakeLost(err) {
@@ -152,43 +179,56 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 			return nil
 		}
 
-		followFor := time.Duration(reply.FollowUpTimeoutSeconds) * time.Second
-		if followFor <= 0 {
-			followFor = 8 * time.Second
-		}
-		if followFor < 3*time.Second {
-			followFor = 3 * time.Second
-		}
-		if followFor > 30*time.Second {
-			followFor = 30 * time.Second
-		}
-		log.Printf("athena: listening for follow-up (%.0f s)", followFor.Seconds())
-
+		convID := reply.ConversationID
 		startListening()
 		listenFor := d.playSound(ctx, lc, "listen")
-		settle := listenFor + 100*time.Millisecond
-		if settle < 300*time.Millisecond {
-			settle = 300 * time.Millisecond
+
+		ack, err := sess.BeginTurn(ctx, true, convID)
+		if err != nil {
+			stopListening()
+			if isWakeLost(err) {
+				d.wakeLost(ctx, cfg)
+				return nil
+			}
+			d.athenaError(ctx, lc, cfg)
+			_ = sess.EndConversation(context.Background(), convID)
+			return nil
 		}
-		pcm, err = d.captureCommand(ctx, followFor, settle, followFor, d.setMicLevel)
+		waitFor := time.Duration(ack.WaitForSpeechSeconds * float64(time.Second))
+		if waitFor <= 0 {
+			waitFor = 10 * time.Second
+		}
+		maxSpeech := time.Duration(cfg.RecognizeTimeoutSeconds) * time.Second
+		if maxSpeech < 10*time.Second {
+			maxSpeech = 10 * time.Second
+		}
+		if maxSpeech > 30*time.Second {
+			maxSpeech = 30 * time.Second
+		}
+		maxCmd := settleFor(listenFor) + waitFor + maxSpeech
+		log.Printf("athena: listening for follow-up (%.0f s, ack)", waitFor.Seconds())
+
+		settle := settleFor(listenFor)
+		pcm, err = d.captureCommand(ctx, maxCmd, settle, waitFor, d.setMicLevel)
 		stopListening()
 		if err != nil {
+			_ = sess.AbortTurn(context.Background())
 			if ctx.Err() == nil {
 				log.Printf("athena: follow-up capture: %v", err)
 				d.athenaError(ctx, lc, cfg)
 			}
-			_ = sess.EndConversation(context.Background(), reply.ConversationID)
+			_ = sess.EndConversation(context.Background(), convID)
 			return nil
 		}
 		if len(pcm) == 0 {
 			log.Printf("athena: follow-up window closed, nobody spoke")
-			_ = sess.EndConversation(context.Background(), reply.ConversationID)
+			_ = sess.AbortTurn(context.Background())
+			_ = sess.EndConversation(context.Background(), convID)
 			return nil
 		}
 		log.Printf("athena: captured follow-up %.1f s", float64(len(pcm))/float64(16000))
-		convID := reply.ConversationID
 		startThinking()
-		reply, err = sess.Turn(ctx, pcm, true, convID)
+		reply, err = sess.SendTurn(ctx, pcm)
 		stopThinking()
 		if err != nil {
 			if isWakeLost(err) {
@@ -286,7 +326,7 @@ func (d *Daemon) speakReply(ctx context.Context, cfg Settings, reply string) (ti
 
 	var show *ledShow
 	if cfg.LEDFeedback {
-		show = d.startLEDPattern(ctx, lc, ledSpeakPattern, ledHueSpeak, speechLevel(pcm, rate))
+		show = d.startLEDAnimation(ctx, ledSpeak, speechLevel(pcm, rate), false, false)
 	}
 	defer show.stop(lc)
 

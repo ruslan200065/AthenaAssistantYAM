@@ -1,30 +1,22 @@
 package daemon
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"math"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ruslan200065/AthenaAssistantYAM/internal/luna"
 )
 
 const (
-	ledPatternDir    = "/system/vendor/quasar/ledpatterns/panel"
-	ledListenPattern = ledPatternDir + "/alice_listening.led"
-	ledThinkPattern  = ledPatternDir + "/alice_thinking.led"
-	ledSpeakPattern  = ledPatternDir + "/alice_speaking.led"
 	ledCount         = 89
-	ledFrameGap      = 20 * time.Millisecond
-	ledHueListen     = 0.33 // green
-	ledHueThink      = 0.60 // blue
-	ledHueSpeak      = 0.08 // warm orange
 	ledErrorColor    = "#FF2020"
 	ledErrorDuration = 1500 * time.Millisecond
 	ledErrorFrame    = 50 * time.Millisecond
@@ -33,92 +25,6 @@ const (
 	ledHandoffFrame  = 40 * time.Millisecond
 	ledHandoffBand   = 9
 )
-
-type ledFrame struct {
-	colors []string
-	delay  time.Duration
-}
-
-// loadLEDPattern reads a native Quasar panel animation. Each frame is a line
-// of 84 RGBA colours followed by a delay in milliseconds. hue replaces the
-// native violet with a state colour while keeping saturation and brightness.
-func loadLEDPattern(path string, hue float64) ([]ledFrame, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	frames := make([]ledFrame, 0, 512)
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 10 {
-			continue
-		}
-		delay := ledFrameGap
-		if n, err := strconv.Atoi(fields[len(fields)-1]); err == nil && n >= 0 && n <= 1000 {
-			delay = time.Duration(n) * time.Millisecond
-			fields = fields[:len(fields)-1]
-		}
-		colors := make([]string, 0, len(fields))
-		for _, tok := range fields {
-			if len(tok) < 6 {
-				colors = nil
-				break
-			}
-			r, err1 := strconv.ParseUint(tok[0:2], 16, 8)
-			g, err2 := strconv.ParseUint(tok[2:4], 16, 8)
-			b, err3 := strconv.ParseUint(tok[4:6], 16, 8)
-			if err1 != nil || err2 != nil || err3 != nil {
-				colors = nil
-				break
-			}
-			ir, ig, ib := recolorRGB(uint8(r), uint8(g), uint8(b), hue)
-			colors = append(colors, fmt.Sprintf("#%02X%02X%02X", ir, ig, ib))
-		}
-		if len(colors) == 0 {
-			continue
-		}
-		frames = append(frames, ledFrame{colors: colors, delay: delay})
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	if len(frames) == 0 {
-		return nil, fmt.Errorf("no frames in %s", path)
-	}
-	return frames, nil
-}
-
-// recolorRGB replaces the hue while keeping saturation and value. Black stays
-// black, so the panel background does not become a coloured wall.
-func recolorRGB(r, g, b uint8, hue float64) (uint8, uint8, uint8) {
-	rf, gf, bf := float64(r)/255, float64(g)/255, float64(b)/255
-	max := rf
-	if gf > max {
-		max = gf
-	}
-	if bf > max {
-		max = bf
-	}
-	min := rf
-	if gf < min {
-		min = gf
-	}
-	if bf < min {
-		min = bf
-	}
-	if max == min {
-		return r, g, b
-	}
-	return hsvToRGB(hue, (max-min)/max, max)
-}
 
 func hsvToRGB(h, s, v float64) (uint8, uint8, uint8) {
 	h = math.Mod(h, 1)
@@ -148,42 +54,36 @@ func hsvToRGB(h, s, v float64) (uint8, uint8, uint8) {
 	return uint8(r*255 + 0.5), uint8(g*255 + 0.5), uint8(b*255 + 0.5)
 }
 
-func hueColor(hue float64) string {
-	r, g, b := hsvToRGB(hue, 0.85, 1)
-	return fmt.Sprintf("#%02X%02X%02X", r, g, b)
-}
-
-func fitLEDColors(src []string, n int) []string {
-	out := make([]string, n)
-	for i := range out {
-		j := i * len(src) / n
-		if j >= len(src) {
-			j = len(src) - 1
-		}
-		out[i] = src[j]
-	}
-	return out
-}
-
 type ledShow struct {
-	cancel   context.CancelFunc
-	done     chan struct{}
-	stopOnce sync.Once
+	cancel      context.CancelFunc
+	done        chan struct{}
+	stopOnce    sync.Once
+	clearOnStop bool
+	guardClear  bool
+	yielded     atomic.Bool
+
+	frameMu   sync.Mutex
+	lastFrame []byte
 }
 
-// startLEDPattern runs a recoloured native animation until stop is called.
-// level, when non-nil, is sampled for every frame and scales brightness, so
-// the panel follows the microphone or the TTS voice instead of looping at a
-// fixed brightness.
-func (d *Daemon) startLEDPattern(ctx context.Context, lc *luna.Client, path string, hue float64, level func() float64) *ledShow {
-	ledCtx, cancel := context.WithCancel(ctx)
-	show := &ledShow{cancel: cancel, done: make(chan struct{})}
-	log.Printf("led: start pattern hue=%.2f", hue)
-	go func() {
-		defer close(show.done)
-		d.playLEDPattern(ledCtx, lc, path, hue, level)
-	}()
-	return show
+func (s *ledShow) setFrame(frame []byte) {
+	s.frameMu.Lock()
+	s.lastFrame = append(s.lastFrame[:0], frame...)
+	s.frameMu.Unlock()
+}
+
+// ownsFramebuffer reports whether the last painted frame is still on screen.
+// A passive animation uses this before clearing so it never blanks native
+// Alice or another indicator that took over meanwhile.
+func (s *ledShow) ownsFramebuffer() bool {
+	s.frameMu.Lock()
+	last := append([]byte(nil), s.lastFrame...)
+	s.frameMu.Unlock()
+	if len(last) == 0 {
+		return false
+	}
+	cur, err := readLEDFramebuffer()
+	return err == nil && bytes.Equal(cur, last)
 }
 
 func (s *ledShow) stop(_ *luna.Client) {
@@ -193,9 +93,12 @@ func (s *ledShow) stop(_ *luna.Client) {
 	s.stopOnce.Do(func() {
 		s.cancel()
 		<-s.done
-		// Native maind can repaint between clear and Luna's ownership check,
-		// so all Station 2 LED writes go straight to the RGBW framebuffer.
-		clearLEDFramebuffer()
+		if s.clearOnStop && (!s.guardClear || s.ownsFramebuffer()) {
+			// Native maind can repaint between clear and Luna's ownership
+			// check, so all Station 2 LED writes go straight to the RGBW
+			// framebuffer.
+			clearLEDFramebuffer()
+		}
 	})
 }
 
@@ -218,12 +121,17 @@ func clearLEDFramebuffer() {
 // to write when native firmware owns the framebuffer, and maind can repaint
 // between our clear and Luna's ownership check. Direct writes are race-free.
 func writeLEDFramebuffer(colors []string) error {
+	_, err := writeLEDFramebufferBytes(colors)
+	return err
+}
+
+func writeLEDFramebufferBytes(colors []string) ([]byte, error) {
 	if len(colors) == 0 {
-		return nil
+		return nil, nil
 	}
 	f, err := os.OpenFile("/dev/fb0", os.O_WRONLY, 0)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
 	buf := make([]byte, ledCount*4)
@@ -249,8 +157,10 @@ func writeLEDFramebuffer(colors []string) error {
 		buf[i*4+1] = uint8(g)
 		buf[i*4+2] = uint8(b)
 	}
-	_, err = f.Write(buf)
-	return err
+	if _, err := f.Write(buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
 }
 
 // pulseErrorLED shows one red heartbeat for 1.5 s and always turns the panel
@@ -317,65 +227,6 @@ func sleepLED(ctx context.Context, d time.Duration) bool {
 	case <-t.C:
 		return true
 	}
-}
-
-// playLEDPattern loops the recoloured native animation until cancel.
-func (d *Daemon) playLEDPattern(ctx context.Context, lc *luna.Client, path string, hue float64, level func() float64) {
-	clearLEDFramebuffer()
-	frames, err := loadLEDPattern(path, hue)
-	if err != nil {
-		fallback := hueColor(hue)
-		log.Printf("led: %v; using solid %s", err, fallback)
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			_ = writeLEDFramebuffer(scaleLEDColors([]string{fallback}, ledLevel(level)))
-			t := time.NewTimer(100 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				t.Stop()
-				return
-			case <-t.C:
-			}
-		}
-	}
-	for {
-		for _, frame := range frames {
-			if ctx.Err() != nil {
-				return
-			}
-			colors := fitLEDColors(frame.colors, ledCount)
-			colors = scaleLEDColors(colors, ledLevel(level))
-			if err := writeLEDFramebuffer(colors); err != nil {
-				log.Printf("led: write fb0: %v", err)
-				return
-			}
-			t := time.NewTimer(frame.delay)
-			select {
-			case <-ctx.Done():
-				t.Stop()
-				return
-			case <-t.C:
-			}
-		}
-	}
-}
-
-// ledLevel keeps a dim baseline in silence and lets the current voice or
-// microphone level drive the rest of the brightness.
-func ledLevel(level func() float64) float64 {
-	if level == nil {
-		return 1
-	}
-	v := level()
-	if v < 0 {
-		v = 0
-	}
-	if v > 1 {
-		v = 1
-	}
-	return 0.25 + 0.75*v
 }
 
 func scaleLEDColors(colors []string, k float64) []string {

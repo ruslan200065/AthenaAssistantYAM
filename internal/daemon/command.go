@@ -18,6 +18,15 @@ var errNoAudio = errors.New("athena: нет аудио со станции")
 // count as speech.
 const wakeSettle = 800 * time.Millisecond
 
+// settleFor covers the follow-up chime plus a little tail.
+func settleFor(sound time.Duration) time.Duration {
+	s := sound + 100*time.Millisecond
+	if s < 300*time.Millisecond {
+		s = 300 * time.Millisecond
+	}
+	return s
+}
+
 // captureCommand waits for one spoken command after a wake hit. It listens to
 // the unamplified microphone bus, so cloud STT gets clean 16-bit PCM; the
 // detector's gain is applied only for VAD decisions. settle covers the wake
@@ -45,9 +54,13 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.D
 	buf := make([]int16, 0, kws.SampleRate*20)
 	start := time.Now()
 	settleUntil := start.Add(settle)
-	waitSpeech := waitFor
-	if waitSpeech <= 0 {
-		waitSpeech = 4 * time.Second
+	// wait_for_speech_seconds is the window in which the user may start
+	// speaking. It starts after the wake chime has died down, not while the
+	// station is still playing its own sound, otherwise a third of the core's
+	// window is lost before the microphone is effectively open.
+	waitSpeech := settle + waitFor
+	if waitFor <= 0 {
+		waitSpeech = settle + 4*time.Second
 	}
 	if max < waitSpeech {
 		waitSpeech = max
@@ -101,7 +114,7 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.D
 			} else {
 				silenceMS += ms
 			}
-			if silenceMS >= 800 {
+			if silenceMS >= 1200 {
 				if voicedMS < 120 {
 					return nil, nil
 				}

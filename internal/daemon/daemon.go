@@ -116,6 +116,15 @@ type Daemon struct {
 	// half-heard phrase cannot survive into the next real utterance.
 	muteUntil time.Time
 	detMuted  bool
+
+	// LED ownership: an Athena turn has priority; music and idle animations
+	// stop immediately and are allowed back only after the turn clears the
+	// matrix.
+	ledMu         sync.Mutex
+	ledAthena     bool
+	auxShow       *ledShow
+	auxMode       ledMode
+	auxRetryAfter time.Time
 }
 
 // cachedName is the app-given station name, re-read when maind rewrites
@@ -318,6 +327,7 @@ func (d *Daemon) rebuildDetector() error {
 
 // Run streams audio until ctx ends, reconnecting to maind as needed.
 func (d *Daemon) Run(ctx context.Context) {
+	go d.auxLEDLoop(ctx)
 	backoff := time.Second
 	for ctx.Err() == nil {
 		channel := d.currentChannel()
