@@ -27,17 +27,38 @@ const (
 const (
 	ledAnimFrame       = 20 * time.Millisecond
 	ledTransition      = 420 * time.Millisecond
-	ledPanelWidth      = 12
-	ledPanelHeight     = 7
-	ledPanelCount      = ledPanelWidth * ledPanelHeight
+	ledPanelWidth      = 15 // coordinate grid, NOT a rectangular framebuffer
+	ledPanelHeight     = 13
+	ledPanelCount      = 84
 	ledOknixCount      = 5
 	ledPixelCount      = ledPanelCount + ledOknixCount
-	ledPanelSerpentine = false
 	ledPanelFlipX      = false
 	ledPanelFlipY      = false
 	ledOknixReverse    = false
 	ledFramebufferPath = "/dev/fb0"
 )
+
+type ledPoint struct{ x, y int }
+
+// Coordinates from the union of blink.higher_points, middle_points and
+// lower_points in the native led-config.json. Ordered by y, then x.
+// Native thinking/volume frames form the expected 14-pixel central contour
+// with this order; no serpentine remapping is applied.
+var ledPanelPoints = [ledPanelCount]ledPoint{
+	{1, 0}, {3, 0}, {5, 0}, {7, 0}, {9, 0}, {11, 0}, {13, 0},
+	{0, 1}, {2, 1}, {4, 1}, {6, 1}, {8, 1}, {10, 1}, {12, 1}, {14, 1},
+	{1, 2}, {3, 2}, {5, 2}, {7, 2}, {9, 2}, {11, 2}, {13, 2},
+	{0, 3}, {2, 3}, {4, 3}, {6, 3}, {8, 3}, {10, 3}, {12, 3}, {14, 3},
+	{1, 4}, {3, 4}, {5, 4}, {7, 4}, {9, 4}, {11, 4}, {13, 4},
+	{0, 5}, {2, 5}, {12, 5}, {14, 5},
+	{1, 6}, {13, 6},
+	{0, 7}, {2, 7}, {12, 7}, {14, 7},
+	{1, 8}, {3, 8}, {5, 8}, {7, 8}, {9, 8}, {11, 8}, {13, 8},
+	{0, 9}, {2, 9}, {4, 9}, {6, 9}, {8, 9}, {10, 9}, {12, 9}, {14, 9},
+	{1, 10}, {3, 10}, {5, 10}, {7, 10}, {9, 10}, {11, 10}, {13, 10},
+	{0, 11}, {2, 11}, {4, 11}, {6, 11}, {8, 11}, {10, 11}, {12, 11}, {14, 11},
+	{1, 12}, {3, 12}, {5, 12}, {7, 12}, {9, 12}, {11, 12}, {13, 12},
+}
 
 var errLEDForeign = errors.New("led: another writer owns the framebuffer")
 
@@ -126,7 +147,7 @@ func (d *Daemon) playLEDAnimation(ctx context.Context, show *ledShow, mode ledMo
 	}
 	if ledAnimationOwner.last != nil {
 		cur, err := readLEDFramebuffer()
-		if err == nil && bytes.Equal(cur, ledAnimationOwner.last) {
+		if (err == nil && bytes.Equal(cur, ledAnimationOwner.last)) || (err != nil && !watch && !requireFree) {
 			from = append([]string(nil), ledAnimationOwner.colors...)
 			w.last = append([]byte(nil), ledAnimationOwner.last...)
 		} else {
@@ -214,7 +235,7 @@ func ledFadeOut(generation uint64) error {
 		return nil
 	}
 	from := append([]string(nil), ledAnimationOwner.colors...)
-	w := &ledFrameWriter{last: append([]byte(nil), ledAnimationOwner.last...)}
+	w := &ledFrameWriter{last: append([]byte(nil), ledAnimationOwner.last...), strictRead: true}
 	ledAnimationOwner.Unlock()
 	black := ledBlackFrame()
 	ticker := time.NewTicker(ledAnimFrame)
@@ -250,9 +271,7 @@ func ledFadeOut(generation uint64) error {
 	}
 }
 
-// animationFrame renders the two native elements in a single framebuffer:
-// panel (84 pixels, 12x7) followed by oknix (5 pixels).
-// Native voice patterns keep the fourth byte zero; match them by default.
+// animationFrame renders exactly one frame in native framebuffer index order.
 func animationFrame(mode ledMode, t, level float64) []string {
 	out := ledBlackFrame()
 	if mode == ledIdle || len(out) != ledPixelCount {
@@ -272,74 +291,84 @@ func animationFrame(mode ledMode, t, level float64) []string {
 		}
 		return out
 	}
-	for row := 0; row < ledPanelHeight; row++ {
-		for col := 0; col < ledPanelWidth; col++ {
-			x, y := (float64(col)-5.5)/3.6, (float64(row)-3)/3.6
-			h, s, v := ledPanelPixel(mode, x, y, t, level)
-			out[ledPanelIndex(col, row)] = hsvString(frac(h/360), clamp01(s), clamp01(v))
+	for i, p := range ledPanelPoints {
+		x, y := (float64(p.x)-7)/4.5, (float64(p.y)-6)/4.5
+		if ledPanelFlipX {
+			x = -x
 		}
+		if ledPanelFlipY {
+			y = -y
+		}
+		h, sat, v := ledPanelPixel(mode, x, y, t, level)
+		out[i] = ledVoiceColor(h, sat, v)
 	}
 	for j := 0; j < ledOknixCount; j++ {
-		h, s, v := ledOknixPixel(mode, j, t, level)
+		h, sat, v := ledOknixPixel(mode, j, t, level)
 		k := j
 		if ledOknixReverse {
 			k = ledOknixCount - 1 - j
 		}
-		out[ledPanelCount+k] = hsvString(frac(h/360), clamp01(s), clamp01(v))
+		out[ledPanelCount+k] = ledVoiceColor(h, sat, v)
 	}
 	return out
-}
-
-// Logical panel coordinates -> physical framebuffer index.
-func ledPanelIndex(col, row int) int {
-	if ledPanelFlipX {
-		col = ledPanelWidth - 1 - col
-	}
-	if ledPanelFlipY {
-		row = ledPanelHeight - 1 - row
-	}
-	if ledPanelSerpentine && row%2 == 1 {
-		col = ledPanelWidth - 1 - col
-	}
-	return row*ledPanelWidth + col
 }
 
 // Pulse envelope smoothly hides the radius reset between waves.
 func ledSonarPulse(r, t, offset, width float64) float64 {
 	p := frac(t*.65 + offset)
-	env := ledSmoothstep(p/.07) * ledSmoothstep((1-p)/.10)
-	return env * ledBell(r-p*2.1, width)
+	env := ledSmoothstep(p/.07) * ledSmoothstep((1-p)/.12)
+	return env * ledBell(r-(.45+p*1.85), width)
 }
 
 func ledPanelPixel(mode ledMode, x, y, t, l float64) (h, s, v float64) {
 	r := math.Hypot(x, y)
+	// The central opening contains no LEDs. Its visible contour is roughly
+	// elliptical; use it as a luminous source instead of a fictitious center.
+	inner := math.Hypot(x/1.12, y/.52)
 	switch mode {
-	case ledListen: // L1: radial sonar, single startup flash.
-		ring := ledSonarPulse(r, t, 0, .19+.12*l)
-		ring2 := .45 * ledSonarPulse(r, t, .55, .17)
-		core := ledBell(r, .38+.22*l)
+	case ledListen:
+		ring := ledSonarPulse(r, t, 0, .22+.14*l)
+		ring2 := .45 * ledSonarPulse(r, t, .55, .20)
+		core := ledBell(inner-1, .36+.12*l)
 		flash := ledBell(t-.32, .23)
-		return 184 + 22*clamp01(r/2), .9 - .62*flash, .025 + (.48+.5*l)*ring + ring2 + core*(.15+.38*l) + .65*flash
-	case ledThink: // T1: two elliptical orbiting comets with tapered tails.
+		return 184 + 22*clamp01(r/2), .9 - .62*flash, .008 + (.48+.5*l)*ring + ring2 + core*(.18+.42*l) + .65*flash*(.45+.55*core)
+	case ledThink:
+		// Two comets orbit the actual central opening. Width is chosen for
+		// the native staggered pixel pitch, so heads never vanish in gaps.
 		p1, p2 := 0.0, 0.0
 		q := t * 1.85
-		for k := 0; k < 9; k++ {
-			u := q - float64(k)*.17
-			w := math.Pow(1-float64(k)/10, 2)
-			cx, cy := 1.25*math.Cos(u), .68*math.Sin(u)
-			p1 = math.Max(p1, w*ledBell(math.Hypot(x-cx, y-cy), .27))
-			p2 = math.Max(p2, w*ledBell(math.Hypot(x+cx, y+cy), .27))
+		for k := 0; k < 11; k++ {
+			u := q - float64(k)*.16
+			w := math.Pow(1-float64(k)/12, 2)
+			cx, cy := 1.13*math.Cos(u), .54*math.Sin(u)
+			p1 = math.Max(p1, w*ledBell(math.Hypot(x-cx, y-cy), .32))
+			p2 = math.Max(p2, w*ledBell(math.Hypot(x+cx, y+cy), .32))
 		}
-		path := ledBell(math.Hypot(x/1.25, y/.68)-1, .12)
-		return ledMix(186, 269, p2/(p1+p2+.001)), .95 - .56*math.Max(p1, p2), .018 + .11*path + .98*p1 + .86*p2 + .12*ledBell(r, .25)
-	case ledSpeak: // S3: two reactive aurora ribbons.
-		w1 := .42*math.Sin(x*2.5+t*2.7) + .10*math.Cos(x*5-t*4)
-		w2 := -.32*math.Cos(x*2.3-t*1.9) - .23
-		p1 := ledBell(y-w1, .18+.22*l)
-		p2 := .8 * ledBell(y-w2, .20+.13*l)
-		return ledMix(163, 284, p2/(p1+p2+.001)), .92 - .52*math.Min(p1, p2), .018 + (.35+.57*l)*p1 + (.31+.5*l)*p2
+		path := ledBell(inner-1, .25)
+		return ledMix(186, 269, p2/(p1+p2+.001)), .95 - .56*math.Max(p1, p2), .006 + .075*path + .98*p1 + .86*p2
+	case ledSpeak:
+		// Route the aurora ribbons above and below the opening, rather than
+		// through nonexistent center pixels. Both remain visible at silence.
+		bend := ledBell(x, 1.0)
+		w1 := .48*bend + .20 + .26*math.Sin(x*2.5+t*2.7) + .08*math.Cos(x*5-t*4)
+		w2 := -.48*bend - .20 - .24*math.Cos(x*2.3-t*1.9)
+		p1 := ledBell(y-w1, .24+.20*l)
+		p2 := .8 * ledBell(y-w2, .24+.17*l)
+		return ledMix(163, 284, p2/(p1+p2+.001)), .92 - .52*math.Min(p1, p2), .008 + (.35+.57*l)*p1 + (.31+.5*l)*p2
 	}
 	return 0, 0, 0
+}
+
+// Independent rounded HSV conversion for voice effects. Music retains the
+// project's existing hsvToRGB implementation. Matches the preview exporter.
+func ledVoiceColor(h, s, v float64) string {
+	h = frac(h/360) * 6
+	s = clamp01(s)
+	v = clamp01(v)
+	f := frac(h)
+	p, q, u := v*(1-s), v*(1-s*f), v*(1-s*(1-f))
+	rgb := [6][3]float64{{v, u, p}, {q, v, p}, {p, v, u}, {p, q, v}, {u, p, v}, {v, p, q}}[int(h)%6]
+	return fmt.Sprintf("#%02X%02X%02X", int(math.Round(rgb[0]*255)), int(math.Round(rgb[1]*255)), int(math.Round(rgb[2]*255)))
 }
 
 // Oknix is a separate five-pixel indicator, synchronized to panel time
@@ -368,7 +397,7 @@ func ledOknixPixel(mode ledMode, j int, t, l float64) (h, s, v float64) {
 func ledBlackFrame() []string {
 	out := make([]string, ledCount)
 	for i := range out {
-		out[i] = "#00000000"
+		out[i] = "#000000"
 	}
 	return out
 }
@@ -404,54 +433,24 @@ func ledBlendFrames(a, b []string, p float64) []string {
 		for k := range c {
 			c[k] = byte(math.Round(ledMix(float64(x[k]), float64(y[k]), p)))
 		}
-		out[i] = fmt.Sprintf("#%02X%02X%02X%02X", c[0], c[1], c[2], c[3])
+		out[i] = fmt.Sprintf("#%02X%02X%02X", c[0], c[1], c[2])
 	}
 	return out
 }
 
-// Write the four-byte native color layout. Voice effects use RGB + zero
-// fourth byte, matching native voice pattern files; its hardware semantics
-// need not be assumed.
-func ledEncodeRGBW(colors []string) ([]byte, error) {
+// Keep the original project's framebuffer writer: it already knows the
+// hardware byte order and any channel conversion. Do not bypass it.
+func ledWriteNative(colors []string) ([]byte, error) {
 	if ledCount != ledPixelCount || len(colors) != ledPixelCount {
 		return nil, fmt.Errorf("led: expected %d pixels, ledCount=%d, frame=%d", ledPixelCount, ledCount, len(colors))
 	}
-	buf := make([]byte, ledPixelCount*4)
-	for i, s := range colors {
-		c, err := ledParseColor(s)
-		if err != nil {
-			return nil, err
-		}
-		copy(buf[4*i:4*i+4], c[:])
-	}
-	return buf, nil
-}
-func ledWriteRGBW(colors []string) ([]byte, error) {
-	buf, err := ledEncodeRGBW(colors)
-	if err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(ledFramebufferPath, os.O_WRONLY, 0)
-	if err != nil {
-		return nil, err
-	}
-	n, err := f.Write(buf)
-	closeErr := f.Close()
-	if err != nil {
-		return nil, err
-	}
-	if n != len(buf) {
-		return nil, io.ErrShortWrite
-	}
-	if closeErr != nil {
-		return nil, closeErr
-	}
-	return buf, nil
+	return writeLEDFramebufferBytes(colors)
 }
 
 func ledBell(x, s float64) float64    { return math.Exp(-math.Pow(x/s, 2)) }
 func ledMix(a, b, p float64) float64  { return a + (b-a)*p }
 func ledSmoothstep(x float64) float64 { x = clamp01(x); return x * x * (3 - 2*x) }
+func ringDist(a, b float64) float64   { d := math.Abs(a - b); return math.Min(d, 1-d) }
 func frac(v float64) float64          { return v - math.Floor(v) }
 func clamp01(v float64) float64 {
 	if math.IsNaN(v) || v < 0 {
@@ -467,16 +466,24 @@ func hsvString(h, s, v float64) string {
 	return fmt.Sprintf("#%02X%02X%02X", r, g, b)
 }
 
-type ledFrameWriter struct{ last []byte }
+type ledFrameWriter struct {
+	last       []byte
+	strictRead bool
+	warnedRead bool
+}
 
 func (w *ledFrameWriter) write(colors []string, requireFree, watch bool) error {
 	if requireFree || watch {
 		cur, err := readLEDFramebuffer()
-		// Fail closed: without readback, ownership cannot be checked safely.
 		if err != nil {
-			return err
-		}
-		if w.last == nil {
+			if w.strictRead {
+				return err
+			}
+			if !w.warnedRead {
+				log.Printf("led: framebuffer readback unavailable: %v", err)
+				w.warnedRead = true
+			}
+		} else if w.last == nil {
 			if requireFree && !dimFrame(cur) {
 				return errLEDForeign
 			}
@@ -484,7 +491,7 @@ func (w *ledFrameWriter) write(colors []string, requireFree, watch bool) error {
 			return errLEDForeign
 		}
 	}
-	buf, err := ledWriteRGBW(colors)
+	buf, err := ledWriteNative(colors)
 	if err != nil {
 		return err
 	}
@@ -507,7 +514,7 @@ func readLEDFramebuffer() ([]byte, error) {
 
 func dimFrame(buf []byte) bool {
 	for i := 0; i+3 < len(buf); i += 4 {
-		if max(buf[i], buf[i+1], buf[i+2], buf[i+3]) > 64 {
+		if max(buf[i], buf[i+1], buf[i+2]) > 64 {
 			return false
 		}
 	}
