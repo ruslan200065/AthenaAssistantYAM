@@ -12,10 +12,11 @@ import (
 var errNoAudio = errors.New("athena: нет аудио со станции")
 
 // wakeSettle covers the audible part of wake.pcm. The file is 1.37 s long,
-// but its chime ends around 0.4 s; the rest is a decaying tail. Waiting for
-// the whole file made the detector miss commands spoken right after the
-// chime.
-const wakeSettle = 550 * time.Millisecond
+// but the chime itself ends around 0.4 s and its tail drops below the VAD
+// threshold around 0.8 s. Waiting for the whole file made the detector miss
+// commands spoken right after the chime; stopping too early made the tail
+// count as speech.
+const wakeSettle = 800 * time.Millisecond
 
 // captureCommand waits for one spoken command after a wake hit. It listens to
 // the unamplified microphone bus, so cloud STT gets clean 16-bit PCM; the
