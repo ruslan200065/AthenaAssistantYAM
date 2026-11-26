@@ -1,0 +1,5 @@
+dist/
+tools/yam/
+docs/
+plugin/bin/athena
+.DS_Store

@@ -1,0 +1,11 @@
+name: athena/assistant
+version: 0.1.0
+license: Apache-2.0
+description: "Athena assistant for Yandex Station: custom wake word, Luna integration, Athena Core answers played through Luna."
+homepage: https://github.com/ruslan200065/AthenaAssistantYAM
+targets: [yandexstation_2]
+files:
+  share/athena.assistant/: plugin/
+  bin/athena-postinstall: scripts/postinstall.sh
+postinstall:
+  - bin/athena-postinstall

@@ -1,0 +1,17 @@
+id = "athena.assistant"
+name = "Athena Assistant"
+version = "0.1.0"
+entry = "bin/athena"
+description = "Athena wake word and voice bridge for Yandex Station: listens for the Athena wake word, sends the request to Athena Core and plays the answer through Luna."
+homepage = "https://github.com/ruslan200065/AthenaAssistantYAM"
+
+permissions = ["exec", "network"]
+
+[launch]
+kind = "binary"
+mode = "service"
+args = ["run"]
+
+[compatibility]
+models = ["yandexstation_2"]
+features = ["microphone.capture", "audio.play.aplay"]
