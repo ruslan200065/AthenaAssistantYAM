@@ -18,11 +18,16 @@ fi
 
 mkdir -p "$LUNA_PLUGINS"
 if [ -d "$LIVE" ]; then
-    OLD="$LUNA_PLUGINS/../athena.assistant.old.$$"
-    mv "$LIVE" "$OLD"
-    echo "athena: previous plugin moved to $OLD"
+    # Update in place. Moving the whole plugin away and copying it back needs
+    # twice the space; on a station with a small /data that fails the update.
+    if [ -f "$LIVE/bin/athena" ]; then
+        cp "$LIVE/bin/athena" "$LIVE/bin/athena.prev" 2>/dev/null || true
+    fi
+    echo "athena: updating plugin in place at $LIVE"
+else
+    mkdir -p "$LIVE"
+    echo "athena: installing plugin at $LIVE"
 fi
-mkdir -p "$LIVE"
 cp -a "$SRC/." "$LIVE/"
 chmod 0755 "$LIVE/bin/athena" 2>/dev/null || true
 
