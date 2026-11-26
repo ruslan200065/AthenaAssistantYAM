@@ -98,8 +98,9 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 		return err
 	}
 	if len(pcm) == 0 {
+		// Nobody spoke. This is not an error: do not play the error sound and
+		// do not flash red, just let the deferred cleanup turn the panel off.
 		log.Printf("athena: no speech recognized")
-		d.athenaError(ctx, lc, cfg)
 		return nil
 	}
 	log.Printf("athena: captured %.1f s, sending to gateway", float64(len(pcm))/float64(16000))
@@ -190,11 +191,12 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 }
 
 // athenaError reports an explicit failure or rejection: the stock error sound
-// plus a red blink for 1.5 s, then the panel is turned off.
+// plus one red heartbeat for 1.5 s, then the panel is turned off. Silence is
+// handled separately and must not use this path.
 func (d *Daemon) athenaError(ctx context.Context, lc *luna.Client, cfg Settings) {
 	d.playSound(context.Background(), lc, "error")
 	if cfg.LEDFeedback {
-		flashErrorLED(ctx, lc)
+		pulseErrorLED(ctx, lc)
 	}
 }
 

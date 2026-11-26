@@ -26,8 +26,8 @@ const (
 	ledHueThink      = 0.60 // blue
 	ledHueSpeak      = 0.08 // warm orange
 	ledErrorColor    = "#FF2020"
-	ledErrorPulse    = 250 * time.Millisecond
-	ledErrorPulses   = 3
+	ledErrorDuration = 1500 * time.Millisecond
+	ledErrorFrame    = 50 * time.Millisecond
 )
 
 type ledFrame struct {
@@ -213,22 +213,23 @@ func clearLEDFramebuffer() {
 	}
 }
 
-// flashErrorLED blinks the panel red for 1.5 s and always turns it off.
-// It is used for explicit failures and cancellations, not for a normal
-// end of the conversation.
-func flashErrorLED(ctx context.Context, lc *luna.Client) {
-	for i := 0; i < ledErrorPulses; i++ {
-		clearLEDFramebuffer()
-		if err := lc.SetRing(ctx, []string{ledErrorColor}); err != nil {
-			log.Printf("led: error flash: %v", err)
+// pulseErrorLED shows one red heartbeat for 1.5 s and always turns the panel
+// off. It is used for explicit failures and cancellations, not for silence
+// (nobody spoke) and not for a normal end of the conversation.
+func pulseErrorLED(ctx context.Context, lc *luna.Client) {
+	clearLEDFramebuffer()
+	frames := int(ledErrorDuration / ledErrorFrame)
+	for i := 0; i < frames; i++ {
+		t := float64(i) / float64(frames)
+		// One smooth swell: dim red -> bright red -> dim red. This reads as a
+		// single heartbeat rather than three discrete blinks.
+		level := 0.55 - 0.30*math.Cos(2*math.Pi*t)
+		colors := scaleLEDColors([]string{ledErrorColor}, level)
+		if err := lc.SetRing(ctx, colors); err != nil {
+			log.Printf("led: error pulse: %v", err)
 			break
 		}
-		if !sleepLED(ctx, ledErrorPulse) {
-			break
-		}
-		_ = lc.RingOff(ctx)
-		clearLEDFramebuffer()
-		if !sleepLED(ctx, ledErrorPulse) {
+		if !sleepLED(ctx, ledErrorFrame) {
 			break
 		}
 	}
@@ -268,35 +269,16 @@ func (d *Daemon) playLEDPattern(ctx context.Context, lc *luna.Client, path strin
 			}
 		}
 	}
-	first := true
-	sentColor := false
-	frameNo := 0
 	for {
 		for _, frame := range frames {
-			frameNo++
 			if ctx.Err() != nil {
 				return
 			}
 			colors := fitLEDColors(frame.colors, ledCount)
-			lv := ledLevel(level)
-			colors = scaleLEDColors(colors, lv)
-			if first {
-				log.Printf("led: first frame color=%s level=%.2f", colors[0], lv)
-				first = false
-			}
-			if frameNo <= 5 {
-				log.Printf("led: frame %d colors=%s ctx=%v", frameNo, colors[0], ctx.Err())
-			}
+			colors = scaleLEDColors(colors, ledLevel(level))
 			if err := lc.SetRing(ctx, colors); err != nil {
 				log.Printf("led: set ring: %v", err)
 				return
-			}
-			if frameNo <= 5 {
-				log.Printf("led: frame %d sent", frameNo)
-			}
-			if !sentColor && colors[0] != "#000000" {
-				log.Printf("led: colored frame sent %s", colors[0])
-				sentColor = true
 			}
 			t := time.NewTimer(frame.delay)
 			select {
