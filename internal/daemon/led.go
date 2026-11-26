@@ -17,7 +17,7 @@ import (
 
 const (
 	ledCount         = 89
-	ledErrorColor    = "#FF2020"
+	ledErrorColor    = "#FF0000"
 	ledErrorDuration = 1500 * time.Millisecond
 	ledErrorFrame    = 50 * time.Millisecond
 	ledHandoffColor  = "#40C4FF"
@@ -163,10 +163,25 @@ func writeLEDFramebufferBytes(colors []string) ([]byte, error) {
 	return buf, nil
 }
 
+// stopLEDAnimations invalidates any running animation and fade. Direct writers
+// such as the error heartbeat use this so their frame cannot be blended with a
+// stale animation frame.
+func stopLEDAnimations() {
+	ledAnimationOwner.Lock()
+	ledAnimationOwner.generation++
+	if ledAnimationOwner.cancel != nil {
+		ledAnimationOwner.cancel()
+		ledAnimationOwner.cancel = nil
+	}
+	ledAnimationOwner.colors, ledAnimationOwner.last = nil, nil
+	ledAnimationOwner.Unlock()
+}
+
 // pulseErrorLED shows one red heartbeat for 1.5 s and always turns the panel
 // off. It is used for explicit failures and cancellations, not for silence
 // (nobody spoke) and not for a normal end of the conversation.
 func pulseErrorLED(ctx context.Context, lc *luna.Client) {
+	stopLEDAnimations()
 	clearLEDFramebuffer()
 	frames := int(ledErrorDuration / ledErrorFrame)
 	for i := 0; i < frames; i++ {
@@ -190,6 +205,7 @@ func pulseErrorLED(ctx context.Context, lc *luna.Client) {
 // matrix to show that another station accepted the request. It is deliberately
 // not the red error heartbeat and plays no sound.
 func (d *Daemon) showWakeLostLED(ctx context.Context) {
+	stopLEDAnimations()
 	clearLEDFramebuffer()
 	frames := int(ledHandoffTime / ledHandoffFrame)
 	for f := 0; f < frames; f++ {

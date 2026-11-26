@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/binary"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/ruslan200065/AthenaAssistantYAM/internal/luna"
@@ -45,9 +46,28 @@ func (d *Daemon) playSound(ctx context.Context, lc *luna.Client, name string) ti
 	if dur > 0 {
 		d.muteDetection(dur + 300*time.Millisecond)
 	}
-	if err := lc.PlayWAV(ctx, wav.Encode(pcm, soundRate)); err != nil {
-		log.Printf("athena: sound %s: %v", name, err)
-		return 0
+	data := wav.Encode(pcm, soundRate)
+	var playErr error
+	for attempt := 0; attempt < 8; attempt++ {
+		playErr = lc.PlayWAV(ctx, data)
+		if playErr == nil {
+			return dur
+		}
+		if !strings.Contains(playErr.Error(), "audio output is busy") {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return 0
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
-	return dur
+	if strings.Contains(playErr.Error(), "audio output is busy") {
+		// The previous TTS job can hold the output for a few hundred ms after
+		// its audible end. Skipping the cue is safer than reporting an error.
+		log.Printf("athena: sound %s skipped: audio output is busy", name)
+	} else {
+		log.Printf("athena: sound %s: %v", name, playErr)
+	}
+	return 0
 }

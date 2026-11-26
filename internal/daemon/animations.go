@@ -330,8 +330,7 @@ func ledPanelPixel(mode ledMode, x, y, t, l float64) (h, s, v float64) {
 		ring := ledSonarPulse(r, t, 0, .22+.14*l)
 		ring2 := .45 * ledSonarPulse(r, t, .55, .20)
 		core := ledBell(inner-1, .36+.12*l)
-		flash := ledBell(t-.32, .23)
-		return 184 + 22*clamp01(r/2), .9 - .62*flash, .008 + (.48+.5*l)*ring + ring2 + core*(.18+.42*l) + .65*flash*(.45+.55*core)
+		return 184 + 22*clamp01(r/2), .9, .008 + (.48+.5*l)*ring + ring2 + core*(.18+.42*l)
 	case ledThink:
 		// Two comets orbit the actual central opening. Width is chosen for
 		// the native staggered pixel pitch, so heads never vanish in gaps.
@@ -377,10 +376,9 @@ func ledOknixPixel(mode ledMode, j int, t, l float64) (h, s, v float64) {
 	x := (float64(j) - 2) / 2
 	switch mode {
 	case ledListen:
-		flash := ledBell(t-.32, .23)
 		pulse := ledSonarPulse(math.Abs(x)*1.65, t, 0, .30+.22*l)
 		core := ledBell(x, .35+.55*l)
-		return 186 + 14*math.Abs(x), .88 - .60*flash, .018 + (.30+.42*l)*pulse + (.14+.28*l)*core + .48*flash
+		return 186 + 14*math.Abs(x), .88, .018 + (.30+.42*l)*pulse + (.14+.28*l)*core
 	case ledThink:
 		pos := .95 * math.Cos(t*1.85)
 		p1 := ledBell(x-pos, .42)
