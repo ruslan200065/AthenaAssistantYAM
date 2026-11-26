@@ -98,7 +98,8 @@ type Model struct {
 	Recall     float64   `json:"recall"`      // held-out takes detected at Threshold
 	FalsePerH  float64   `json:"false_per_h"` // held-out negatives, triggers per hour
 	EvalHours  float64   `json:"eval_hours"`
-	Head       *Head     `json:"head"`
+	Head       *Head     `json:"head,omitempty"`
+	MLP        *MLP      `json:"mlp,omitempty"`
 	TrainNotes []string  `json:"notes,omitempty"`
 }
 
@@ -108,13 +109,28 @@ func ReadModel(b []byte) (*Model, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, err
 	}
-	if m.Head == nil {
-		return nil, errors.New("kws: model has no head")
+	if m.Head == nil && m.MLP == nil {
+		return nil, errors.New("kws: model has neither head nor mlp")
 	}
-	if err := m.Head.Validate(); err != nil {
-		return nil, err
+	if m.Head != nil {
+		if err := m.Head.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	if m.MLP != nil {
+		if err := m.MLP.Validate(); err != nil {
+			return nil, err
+		}
 	}
 	return &m, nil
+}
+
+// Score returns the wake-word probability for one window of embeddings.
+func (m *Model) Score(x []float32) float32 {
+	if m.MLP != nil {
+		return m.MLP.Score(x)
+	}
+	return m.Head.Score(x)
 }
 
 type Progress func(stage string, frac float64)

@@ -23,6 +23,7 @@ func cmdRun(args []string) error {
 	var opt daemon.Options
 	fs.StringVar(&opt.DataDir, "data", defaultData, "words, settings and trained models")
 	fs.StringVar(&opt.Negatives, "negatives", filepath.Join(filepath.Dir(exe), "negatives.bin"), "bundled negative set")
+	fs.StringVar(&opt.BundledModel, "model", envOr("ATHENA_MODEL", filepath.Join(filepath.Dir(exe), "..", "models", "athena.json")), "pre-trained wake-word model copied on first run")
 	fs.StringVar(&opt.QuasarCfg, "quasar-cfg", "/system/vendor/quasar/quasar.cfg", "service ports")
 	fs.StringVar(&opt.UserConfig, "user-config", quasar.UserConfigPath, "synced config with the station's name")
 	fs.StringVar(&opt.Listen, "listen", ":8781", "web UI address")

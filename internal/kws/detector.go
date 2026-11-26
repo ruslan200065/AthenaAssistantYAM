@@ -65,7 +65,7 @@ func (d *Detector) Push(pcm []int16, hit func(i int, score float32)) {
 			return
 		}
 		for i, m := range d.models {
-			s := m.Head.Score(d.ring)
+			s := m.Score(d.ring)
 			d.Scores[i] = s
 			if d.gates[i].step(s, min(0.99, max(0.05, m.Threshold+d.sens[i]))) {
 				hit(i, s)

@@ -24,11 +24,12 @@ import (
 )
 
 type Options struct {
-	DataDir    string // words, settings
-	Negatives  string // bundled negatives.bin
-	QuasarCfg  string
-	UserConfig string // maind's synced config, for the station name
-	Listen     string
+	DataDir      string // words, settings
+	Negatives    string // bundled negatives.bin
+	BundledModel string // optional pre-trained model copied on first run
+	QuasarCfg    string
+	UserConfig   string // maind's synced config, for the station name
+	Listen       string
 }
 
 // Settings is persisted in <data>/settings.json.
@@ -183,6 +184,9 @@ func New(opt Options) (*Daemon, error) {
 	if d.settings.Words == nil {
 		d.settings.Words = map[string]*WordSettings{}
 	}
+	if err := d.installBundledModel(); err != nil {
+		return nil, err
+	}
 	if err := d.loadWords(); err != nil {
 		return nil, err
 	}
@@ -202,6 +206,39 @@ func (d *Daemon) saveSettings() error {
 		return err
 	}
 	return os.Rename(tmp, d.settingsPath())
+}
+
+// installBundledModel copies a pre-trained model into the data directory on
+// first start. It never replaces a model the user already trained.
+func (d *Daemon) installBundledModel() error {
+	if d.opt.BundledModel == "" {
+		return nil
+	}
+	b, err := os.ReadFile(d.opt.BundledModel)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("bundled model: %w", err)
+	}
+	m, err := kws.ReadModel(b)
+	if err != nil {
+		return fmt.Errorf("bundled model: %w", err)
+	}
+	id := wordID(m.Name)
+	dir := d.wordDir(id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	dst := filepath.Join(dir, "model.json")
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	}
+	if err := os.WriteFile(dst, b, 0o644); err != nil {
+		return err
+	}
+	log.Printf("word %s: installed bundled model", id)
+	return nil
 }
 
 func (d *Daemon) loadWords() error {
