@@ -21,7 +21,7 @@
   button.big { font-size: 18px; padding: 14px 22px; }
   button.danger { color: var(--bad); }
   button:disabled { opacity: .5; cursor: default; }
-  input[type=text] { font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); min-width: 220px; }
+  input[type=text], input[type=password], select { font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); min-width: 220px; }
   .pill { display:inline-flex; gap:6px; align-items:center; padding: 3px 10px; border-radius: 99px; font-size: 13px; background: var(--bg); border:1px solid var(--line); }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }
   .dot.on { background: var(--ok); }
@@ -120,6 +120,13 @@
     <div class="row" style="margin-top:8px"><input class="grow" id="athurl" type="text" placeholder="http://192.168.0.56:8000/api"></div>
     <div class="row" style="margin-top:8px"><input class="grow" id="athtoken" type="password" placeholder="токен устройства (оставьте пустым, чтобы не менять)"></div>
     <div class="row" style="margin-top:8px"><input class="grow" id="athluna" type="text" placeholder="http://127.0.0.1:8099"></div>
+    <div class="row" style="margin-top:8px">
+      <label class="muted" for="athchannel">Микрофонный канал</label>
+      <select id="athchannel">
+        <option value="vqe_0">vqe_0 — как у Алисы</option>
+        <option value="vqe_bnr">vqe_bnr — с шумоподавлением</option>
+      </select>
+    </div>
     <div class="row" style="margin-top:8px">
       <button class="primary" id="athsave">Сохранить</button>
       <button id="athtest">Проверить ответ</button>
@@ -224,7 +231,7 @@ async function refresh() {
       document.title = s.station ? `${s.station} — свои слова активации` : "Свои слова активации";
     }
     $("adot").className = "dot" + (s.audio.ok ? " on" : "");
-    $("atext").textContent = s.audio.ok ? s.audio.channel : "нет звука";
+    $("atext").textContent = s.audio.ok ? s.audio.channel + (s.audio.muted ? " · пауза (ответ)" : "") : "нет звука";
     $("alevel").style.width = pct(Math.max(0, Math.min(1, (s.audio.level + 80) / 70)));
     renderWords(s); renderHits(s); renderEnroll(s); renderTrain(s);
     if (prev && prev.train.active && !s.train.active && !s.train.error) {
@@ -299,12 +306,13 @@ async function loadAthena() {
     const c = await api("GET", "/api/athena/config");
     $("athurl").value = c.athena_url || "";
     $("athluna").value = c.luna_url || "";
+    $("athchannel").value = c.channel || "vqe_0";
     $("athtoken").value = "";
     $("athtoken").placeholder = c.athena_token_set ? "токен задан (оставьте пустым, чтобы не менять)" : "токен устройства";
   } catch (e) { msg($("athmsg"), e.message, "bad"); }
 }
 $("athsave").onclick = () => run($("athsave"), async () => {
-  const body = { athena_url: $("athurl").value.trim(), luna_url: $("athluna").value.trim() };
+  const body = { athena_url: $("athurl").value.trim(), luna_url: $("athluna").value.trim(), channel: $("athchannel").value };
   if ($("athtoken").value.trim()) body.athena_token = $("athtoken").value.trim();
   await api("POST", "/api/athena/config", body);
   msg($("athmsg"), "Сохранено", "ok");

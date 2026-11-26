@@ -85,6 +85,10 @@ type Daemon struct {
 	startListen func(word string) error
 	athenaMu    sync.Mutex // one wake->recognize->ask turn at a time
 
+	audioMu     sync.Mutex
+	audioCancel context.CancelFunc
+	audioGen    int
+
 	mu       sync.Mutex
 	settings Settings
 	words    []word
@@ -103,6 +107,12 @@ type Daemon struct {
 	name     cachedName
 	events   subscribers[hitEvent]
 	audio    subscribers[[]int16]
+
+	// Playback guard: while our beep/TTS is sounding, the detector must not
+	// hear the station itself. The detector is reset on both edges so a
+	// half-heard phrase cannot survive into the next real utterance.
+	muteUntil time.Time
+	detMuted  bool
 }
 
 // cachedName is the app-given station name, re-read when maind rewrites
@@ -166,17 +176,23 @@ func New(opt Options) (*Daemon, error) {
 			return nil, fmt.Errorf("settings: %w", err)
 		}
 	}
-	if d.settings.Channel == "" {
+	if d.settings.Channel == "" || (d.settings.Channel != "vqe_0" && d.settings.Channel != "vqe_bnr") {
 		d.settings.Channel = "vqe_0"
 	}
 	if d.settings.Gain == 0 {
 		d.settings.Gain = 32
 	}
-	if d.settings.AthenaURL == "" {
+	if !validHTTPURL(d.settings.AthenaURL) {
 		d.settings.AthenaURL = envOr("ATHENA_URL", "http://192.168.0.56:8000/api")
 	}
-	if d.settings.LunaURL == "" {
+	if !validHTTPURL(d.settings.AthenaURL) {
+		d.settings.AthenaURL = "http://192.168.0.56:8000/api"
+	}
+	if !validHTTPURL(d.settings.LunaURL) {
 		d.settings.LunaURL = envOr("LUNA_URL", "http://127.0.0.1:8099")
+	}
+	if !validHTTPURL(d.settings.LunaURL) {
+		d.settings.LunaURL = "http://127.0.0.1:8099"
 	}
 	if d.settings.RecognizeTimeoutSeconds < 2 || d.settings.RecognizeTimeoutSeconds > 60 {
 		d.settings.RecognizeTimeoutSeconds = 15
@@ -301,10 +317,33 @@ func (d *Daemon) rebuildDetector() error {
 func (d *Daemon) Run(ctx context.Context) {
 	backoff := time.Second
 	for ctx.Err() == nil {
+		channel := d.currentChannel()
+		streamCtx, cancel := context.WithCancel(ctx)
+
+		d.audioMu.Lock()
+		d.audioGen++
+		gen := d.audioGen
+		d.audioCancel = cancel
+		d.audioMu.Unlock()
+
 		start := time.Now()
-		err := quasar.AudioStream(ctx, d.audioPort, d.settings.Channel, d.onAudio)
+		err := quasar.AudioStream(streamCtx, d.audioPort, channel, d.onAudio)
+		cancel()
+
+		d.audioMu.Lock()
+		if d.audioGen == gen {
+			d.audioCancel = nil
+		}
+		d.audioMu.Unlock()
+
 		if ctx.Err() != nil {
 			return
+		}
+		if errors.Is(err, context.Canceled) {
+			// A settings change asked for a different channel; reconnect at
+			// once instead of treating this as a failure.
+			backoff = time.Second
+			continue
 		}
 		d.mu.Lock()
 		d.audioOK = false
@@ -313,7 +352,7 @@ func (d *Daemon) Run(ctx context.Context) {
 		if time.Since(start) > time.Minute {
 			backoff = time.Second
 		}
-		log.Printf("audio stream: %v (retry in %s)", err, backoff)
+		log.Printf("audio stream (%s): %v (retry in %s)", channel, err, backoff)
 		select {
 		case <-ctx.Done():
 		case <-time.After(backoff):
@@ -346,9 +385,23 @@ func (d *Daemon) onAudio(raw []int16) {
 	// Push runs under the lock: rebuildDetector swaps the detector, and the
 	// hit callback reads the ring and the word settings.
 	if d.det != nil && d.paused == 0 {
-		d.det.Push(pcm, func(i int, score float32) {
-			fired = append(fired, d.recordHit(d.detWords[i], score))
-		})
+		if time.Now().Before(d.muteUntil) {
+			if !d.detMuted {
+				d.det.Reset()
+				d.detMuted = true
+			}
+		} else {
+			if d.detMuted {
+				d.det.Reset()
+				d.detMuted = false
+			}
+			d.det.Push(pcm, func(i int, score float32) {
+				fired = append(fired, d.recordHit(d.detWords[i], score))
+			})
+			if len(fired) > 0 {
+				d.det.Reset()
+			}
+		}
 	}
 	d.mu.Unlock()
 

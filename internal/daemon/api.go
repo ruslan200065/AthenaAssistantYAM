@@ -52,6 +52,7 @@ type stateView struct {
 		Error   string  `json:"error,omitempty"`
 		Level   float64 `json:"level"`
 		Channel string  `json:"channel"`
+		Muted   bool    `json:"muted"`
 	} `json:"audio"`
 	Words  []wordView  `json:"words"`
 	Hits   []*Hit      `json:"hits"`
@@ -65,6 +66,7 @@ func (d *Daemon) state() stateView {
 	var v stateView
 	v.Station = d.stationName()
 	v.Audio.OK, v.Audio.Error, v.Audio.Level, v.Audio.Channel = d.audioOK, d.audioErr, d.level, d.settings.Channel
+	v.Audio.Muted = d.detMuted || time.Now().Before(d.muteUntil)
 	v.Words = make([]wordView, 0, len(d.words)) // [] not null for the UI
 	scores := map[string]float32{}
 	if d.det != nil {
@@ -221,6 +223,7 @@ func (d *Daemon) Handler() http.Handler {
 			AthenaURL               *string `json:"athena_url"`
 			AthenaToken             string  `json:"athena_token"`
 			LunaURL                 *string `json:"luna_url"`
+			Channel                 *string `json:"channel"`
 			RecognizeTimeoutSeconds *int    `json:"recognize_timeout_seconds"`
 			TTSVoice                *string `json:"tts_voice"`
 			MuteReplies             *bool   `json:"mute_replies"`
@@ -230,12 +233,39 @@ func (d *Daemon) Handler() http.Handler {
 			httpErr(w, err)
 			return
 		}
-		d.mu.Lock()
+		if req.Channel != nil {
+			c := strings.TrimSpace(*req.Channel)
+			if c != "vqe_0" && c != "vqe_bnr" {
+				httpErr(w, errors.New("канал должен быть vqe_0 или vqe_bnr"))
+				return
+			}
+		}
+		var athenaURL, lunaURL string
+		var err error
 		if req.AthenaURL != nil {
-			d.settings.AthenaURL = strings.TrimRight(strings.TrimSpace(*req.AthenaURL), "/")
+			if athenaURL, err = cleanHTTPURL(*req.AthenaURL); err != nil {
+				httpErr(w, errors.New("athena_url: "+err.Error()))
+				return
+			}
 		}
 		if req.LunaURL != nil {
-			d.settings.LunaURL = strings.TrimRight(strings.TrimSpace(*req.LunaURL), "/")
+			if lunaURL, err = cleanHTTPURL(*req.LunaURL); err != nil {
+				httpErr(w, errors.New("luna_url: "+err.Error()))
+				return
+			}
+		}
+		channelChanged := false
+		d.mu.Lock()
+		if req.AthenaURL != nil {
+			d.settings.AthenaURL = athenaURL
+		}
+		if req.LunaURL != nil {
+			d.settings.LunaURL = lunaURL
+		}
+		if req.Channel != nil {
+			c := strings.TrimSpace(*req.Channel)
+			channelChanged = c != d.settings.Channel
+			d.settings.Channel = c
 		}
 		if req.ClearToken {
 			d.settings.AthenaToken = ""
@@ -251,11 +281,14 @@ func (d *Daemon) Handler() http.Handler {
 		if req.MuteReplies != nil {
 			d.settings.MuteReplies = *req.MuteReplies
 		}
-		err := d.saveSettings()
+		err = d.saveSettings()
 		d.mu.Unlock()
 		if err != nil {
 			httpErr(w, err)
 			return
+		}
+		if channelChanged {
+			d.restartAudio()
 		}
 		writeJSON(w, d.athenaConfigView())
 	})

@@ -73,3 +73,16 @@ func (d *Detector) Push(pcm []int16, hit func(i int, score float32)) {
 		}
 	})
 }
+
+// Reset drops partial feature/embedding state. Native Alice resets its spotter
+// after a dialog and while TTS plays; the playback guard does the same here so
+// a phrase cut in half by the beep cannot trigger on the next chunk.
+func (d *Detector) Reset() {
+	d.feat.Reset()
+	clear(d.ring)
+	d.have = 0
+	for i := range d.gates {
+		d.gates[i] = gate{}
+	}
+	clear(d.Scores)
+}

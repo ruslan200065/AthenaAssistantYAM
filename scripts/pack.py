@@ -22,7 +22,6 @@ FILES = [
     ("bin/athena-postinstall", ROOT / "scripts" / "postinstall.sh", 0o755),
     ("share/athena.assistant/bin/athena", ROOT / "dist" / "athena", 0o755),
     ("share/athena.assistant/bin/negatives.bin", ROOT / "plugin" / "bin" / "negatives.bin", 0o644),
-    ("share/athena.assistant/models/athena.json", ROOT / "plugin" / "models" / "athena.json", 0o644),
     ("share/athena.assistant/plugin.toml", ROOT / "plugin" / "plugin.toml", 0o644),
 ]
 

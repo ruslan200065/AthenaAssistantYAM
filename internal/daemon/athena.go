@@ -36,6 +36,16 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 			defer lc.RingOff(context.Background())
 		}
 	}
+	// Acknowledge the wake word immediately. Recognition runs in parallel, so
+	// the user can start the command right after the beep.
+	d.muteDetection(1200 * time.Millisecond)
+	go func() {
+		ackCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		defer cancel()
+		if err := lc.PlayWAV(ackCtx, wav.Encode(ackTone(), 48000)); err != nil {
+			log.Printf("athena: ack sound: %v", err)
+		}
+	}()
 	timeout := time.Duration(cfg.RecognizeTimeoutSeconds) * time.Second
 	text, err := lc.Recognize(ctx, timeout)
 	if err != nil {
@@ -86,6 +96,8 @@ func (d *Daemon) askAthena(ctx context.Context, cfg Settings, text string) error
 	if len(pcm) == 0 {
 		return errors.New("athena: tts returned no audio")
 	}
+	playFor := time.Duration(len(pcm)) * time.Second / time.Duration(rate)
+	d.muteDetection(playFor + time.Second)
 	lc := luna.New(cfg.LunaURL)
 	if err := lc.PlayWAV(ctx, wav.Encode(pcm, rate)); err != nil {
 		return err
@@ -101,6 +113,7 @@ func (d *Daemon) athenaConfigView() map[string]any {
 		"athena_url":                d.settings.AthenaURL,
 		"athena_token_set":          d.settings.AthenaToken != "",
 		"luna_url":                  d.settings.LunaURL,
+		"channel":                   d.settings.Channel,
 		"recognize_timeout_seconds": d.settings.RecognizeTimeoutSeconds,
 		"tts_voice":                 d.settings.TTSVoice,
 		"mute_replies":              d.settings.MuteReplies,

@@ -131,7 +131,7 @@ func AudioStream(ctx context.Context, port int, channel string, fn func(pcm []in
 	// all channels lets the caller pick vqe_gain/raw ones too.
 	req := protowire.AppendTag(nil, 2, protowire.BytesType)
 	req = protowire.AppendBytes(req, nil)
-	if channel == "vqe_0" {
+	if channel == "vqe_0" || channel == "vqe_bnr" {
 		req = protowire.AppendTag(nil, 3, protowire.BytesType)
 		req = protowire.AppendBytes(req, nil)
 	}
