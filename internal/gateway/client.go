@@ -35,7 +35,7 @@ func New(baseURL, token string) *Client {
 		BaseURL:  strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		Token:    token,
 		DeviceID: "yandexstation_2",
-		Firmware: "athena-yam 0.2.7",
+		Firmware: "athena-yam 0.2.8",
 		Hardware: "yandexstation_2",
 	}
 }
@@ -110,6 +110,8 @@ type Reply struct {
 	Text                   string
 	Listen                 bool
 	End                    bool
+	Early                  bool
+	Reason                 string
 	ConversationID         int64
 	ConversationState      string
 	FollowUpTimeoutSeconds int
@@ -243,9 +245,13 @@ func (s *Session) Turn(ctx context.Context, pcm []int16, followUp bool, conversa
 				FollowUpTimeoutSeconds: ev.FollowUpTimeoutSeconds,
 			}, nil
 		case "conversation.end":
-			// The core closes the dialogue before/without a reply.
+			// The core closes the dialogue before/without a reply. This is an
+			// early cancellation, not a normal answer (normal answers arrive as
+			// assistant.reply first).
 			return &Reply{
 				End:            true,
+				Early:          true,
+				Reason:         firstNonEmpty(ev.Reason, "conversation_end"),
 				ConversationID: parseID(ev.ConversationID),
 			}, nil
 		case "utterance.drop":

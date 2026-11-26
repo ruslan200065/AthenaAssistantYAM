@@ -112,6 +112,13 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 		d.athenaError(ctx, lc, cfg)
 		return err
 	}
+	if reply.Early {
+		// The core closed the dialogue before answering. This is a cancellation
+		// (another station answered, intercom, wake lost), not normal silence.
+		log.Printf("athena: core ended dialogue early: %s", reply.Reason)
+		d.athenaError(ctx, lc, cfg)
+		return nil
+	}
 
 	for {
 		log.Printf("athena: heard request, reply %q (listen=%v end=%v)", reply.Text, reply.Listen, reply.End)
