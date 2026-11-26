@@ -237,6 +237,11 @@ func (s *Session) BeginTurn(ctx context.Context, followUp bool, conversationID i
 				WaitForSpeechSeconds: wait,
 			}, nil
 		case "conversation.end":
+			if !followUp {
+				// A reply with listen=false is followed by conversation.end.
+				// Consume that stale frame before opening the new turn.
+				continue
+			}
 			return nil, &DropError{Reason: firstNonEmpty(ev.Reason, "conversation_end")}
 		case "utterance.drop":
 			return nil, &DropError{Reason: firstNonEmpty(ev.Reason, "unknown")}

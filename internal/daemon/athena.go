@@ -165,14 +165,15 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 		_ = sess.PlaybackStopped(ctx)
 
 		keepListening := reply.Listen && !reply.End
-		if !keepListening && strings.HasSuffix(strings.TrimSpace(reply.Text), "?") {
-			// The core prompt asks the model to end question replies with
-			// [listen], but a model sometimes answers with a question and
-			// [end]. The user hears a question and expects to answer it, so
-			// open one follow-up window anyway; the core accepts follow_up
-			// with the same conversation id.
-			log.Printf("athena: reply is a question; opening follow-up despite listen=false")
+		newTurn := false
+		if !keepListening && wantsFollowUp(reply.Text) {
+			// The model sometimes ends with an invitation or a question and
+			// [end]. The user hears a prompt and expects to answer it, so keep
+			// the microphone open. If the core already ended the conversation,
+			// open a fresh wake turn instead of a rejected follow-up.
+			log.Printf("athena: reply invites an answer; opening listening turn")
 			keepListening = true
+			newTurn = reply.End
 		}
 		if !keepListening {
 			_ = sess.EndConversation(ctx, reply.ConversationID)
@@ -183,7 +184,12 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 		startListening()
 		listenFor := d.playSound(ctx, lc, "listen")
 
-		ack, err := sess.BeginTurn(ctx, true, convID)
+		var ack *gateway.Ack
+		if newTurn {
+			ack, err = sess.BeginTurn(ctx, false, 0)
+		} else {
+			ack, err = sess.BeginTurn(ctx, true, convID)
+		}
 		if err != nil {
 			stopListening()
 			if isWakeLost(err) {
@@ -246,6 +252,24 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// wantsFollowUp recognises answers that ask the person to continue even when
+// the core marked the turn as ended with [end].
+func wantsFollowUp(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	if strings.HasSuffix(t, "?") {
+		return true
+	}
+	for _, phrase := range []string{
+		"говорите", "скажите", "слушаю", "я здесь",
+		"чем могу помочь", "что нужно", "что-нибудь ещё", "продолжайте",
+	} {
+		if strings.Contains(t, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // isWakeLost reports that another station claimed the wake word. This is a
