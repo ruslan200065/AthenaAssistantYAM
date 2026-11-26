@@ -21,7 +21,6 @@ const (
 	ledThink
 	ledSpeak
 	ledMusic
-	ledIdle
 )
 
 const (
@@ -52,7 +51,7 @@ func (m ledMode) String() string {
 	case ledMusic:
 		return "music"
 	default:
-		return "idle"
+		return "unknown"
 	}
 }
 
@@ -254,14 +253,12 @@ func animationFrame(mode ledMode, t, level float64) []string {
 			p := frac(t * .65)
 			p1 := p
 			p2 := frac(p + .55)
-			ring1 := ledBell(ringDist(x, p1), .030+.014*level)
-			ring2 := .52 * ledBell(ringDist(x, p2), .026+.011*level)
-			breathe := .5 + .5*math.Sin(4*a-2.2*t)
-			// Compensate for the startup crossfade so the white flash is visible.
-			flash := ledBell(t-.25, .29)
-			h = (176 + 24*clamp01(ring1+ring2)) / 360
-			s = .90 - .52*flash
-			v = .028 + .05*level + .09*breathe*(.35+.65*level) + (.56+.38*level)*ring1 + (.30+.24*level)*ring2 + .65*flash
+			ring := ledBell(ringDist(x, p1), .030+.014*level)
+			ring2 := .45 * ledBell(ringDist(x, p2), .026+.011*level)
+			core := ledBell(ringDist(x, p1), .35+.20*level)
+			h = (184 + 22*clamp01(ring+ring2)) / 360
+			s = .90
+			v = .025 + (.48+.50*level)*ring + ring2 + core*(.15+.38*level)
 		case ledThink: // two orbiting comets with fading tails
 			q := t * 1.85
 			p1, p2 := 0.0, 0.0
@@ -273,21 +270,17 @@ func animationFrame(mode ledMode, t, level float64) []string {
 				p1 = math.Max(p1, w*ledBell(ringDist(x, pos1), .026))
 				p2 = math.Max(p2, w*ledBell(ringDist(x, pos2), .026))
 			}
-			twinkle := math.Pow(math.Max(0, math.Sin(2*math.Pi*(x*7.3+t*.9))), 18) * .30
 			h = ledMix(186, 269, p2/(p1+p2+.001)) / 360
-			s = .95 - .50*math.Max(p1, p2)
-			v = .018 + .055*(.5+.5*math.Sin(2*a-t*.8)) + .98*p1 + .84*p2 + twinkle
+			s = .95 - .56*math.Max(p1, p2)
+			v = .018 + .98*p1 + .86*p2
 		case ledSpeak: // two audio-reactive aurora ribbons
 			p1 := frac(t * .20)
 			p2 := frac(.55 - t*.13)
 			b1 := ledBell(ringDist(x, p1), .090+.065*level)
 			b2 := ledBell(ringDist(x, p2), .105+.050*level)
-			w1 := .5 + .5*math.Sin(4*a+2.7*t)
-			w2 := .5 + .5*math.Sin(3*a-1.9*t+1.7)
-			shimmer := math.Pow(math.Max(0, math.Sin(2*math.Pi*(x*6.4+t*1.8))), 14) * .10
 			h = ledMix(163, 284, b2/(b1+b2+.001)) / 360
-			s = .92 - .46*clamp01(b1+b2)
-			v = .022 + (.15+.42*level)*(b1+b2) + (.05+.14*level)*(w1+w2)*.5 + shimmer*(.35+.65*level)
+			s = .92 - .52*math.Min(b1, b2)
+			v = .018 + (.35+.57*level)*b1 + (.31+.50*level)*b2
 		case ledMusic: // rotating rainbow with a synthetic beat and sparkles
 			beat := math.Exp(-7 * frac(t*1.9))
 			w1 := .5 + .5*math.Sin(6*a-5*t)
@@ -296,12 +289,8 @@ func animationFrame(mode ledMode, t, level float64) []string {
 			h = frac(x + .08*t)
 			s = .92
 			v = clamp01(.10 + .20*w1 + .26*beat + .18*w1*w2 + .45*spark*(.35+beat))
-		default: // ledIdle: a calm, very dim breathing aurora
-			w1 := .5 + .5*math.Sin(2*a+.55*t)
-			w2 := .5 + .5*math.Sin(3*a-.35*t+1.8)
-			h = .55 + .025*math.Sin(.20*t)
-			s = .78
-			v = .042 + .065*w1 + .035*w2
+		default:
+			continue
 		}
 		out[i] = hsvString(h, clamp01(s), clamp01(v))
 	}

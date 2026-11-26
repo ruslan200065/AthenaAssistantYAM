@@ -35,7 +35,7 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	cfg := d.athenaSettings()
 	lc := luna.New(cfg.LunaURL)
 
-	// Athena owns the ring for the whole turn: music/idle animations yield at
+	// Athena owns the ring for the whole turn: the music animation yields at
 	// once, and the panel is cleared before they are allowed back.
 	d.beginAthenaLED()
 	defer d.endAthenaLED()

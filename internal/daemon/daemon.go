@@ -117,9 +117,8 @@ type Daemon struct {
 	muteUntil time.Time
 	detMuted  bool
 
-	// LED ownership: an Athena turn has priority; music and idle animations
-	// stop immediately and are allowed back only after the turn clears the
-	// matrix.
+	// LED ownership: an Athena turn has priority; the music animation stops
+	// immediately and is allowed back only after the turn clears the ring.
 	ledMu         sync.Mutex
 	ledAthena     bool
 	auxShow       *ledShow

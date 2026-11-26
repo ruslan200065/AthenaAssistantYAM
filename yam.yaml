@@ -1,5 +1,5 @@
 name: athena/assistant
-version: 0.2.12
+version: 0.2.14
 license: Apache-2.0
 description: "Athena assistant for Yandex Station: custom wake word, Luna integration, Athena Core answers played through Luna."
 homepage: https://github.com/ruslan200065/AthenaAssistantYAM

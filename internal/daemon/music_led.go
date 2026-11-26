@@ -8,9 +8,9 @@ import (
 	"github.com/ruslan200065/AthenaAssistantYAM/internal/luna"
 )
 
-// beginAthenaLED claims the ring for a dialogue turn. Music and idle
-// animations are stopped and cleared, and they cannot restart until
-// endAthenaLED releases the ring.
+// beginAthenaLED claims the ring for a dialogue turn. The music animation
+// is stopped and cleared, and it cannot restart until endAthenaLED releases
+// the ring.
 func (d *Daemon) beginAthenaLED() {
 	d.ledMu.Lock()
 	defer d.ledMu.Unlock()
@@ -34,11 +34,8 @@ func (d *Daemon) stopAuxLEDLocked() {
 	d.auxMode = -1
 }
 
-// auxLEDLoop keeps a visual on the ring whenever Athena is quiet:
-// local.sendspin playing -> music spectrum, otherwise a calm idle aurora.
-// The idle animation only starts on an unowned (black) framebuffer and yields
-// the moment native Alice or another indicator paints, so it never fights the
-// station's own lights.
+// auxLEDLoop keeps the music animation on the ring while local.sendspin is
+// playing. When nothing is playing the ring is not touched at all.
 func (d *Daemon) auxLEDLoop(ctx context.Context) {
 	const poll = 1500 * time.Millisecond
 	for {
@@ -93,17 +90,16 @@ func (d *Daemon) updateAuxLED(ctx context.Context) {
 	if time.Now().Before(d.auxRetryAfter) {
 		return
 	}
-	want := ledIdle
-	requireFree, watch := true, true
-	if playing {
-		want = ledMusic
+	if !playing {
+		d.stopAuxLEDLocked()
+		return
 	}
-	if d.auxShow != nil && d.auxMode == want {
+	if d.auxShow != nil && d.auxMode == ledMusic {
 		return
 	}
 	d.stopAuxLEDLocked()
-	d.auxMode = want
-	d.auxShow = d.startLEDAnimation(ctx, want, nil, requireFree, watch)
+	d.auxMode = ledMusic
+	d.auxShow = d.startLEDAnimation(ctx, ledMusic, nil, true, true)
 }
 
 func showDone(s *ledShow) bool {
