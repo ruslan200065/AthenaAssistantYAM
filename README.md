@@ -150,7 +150,7 @@ adb shell "/data/yam/bin/yam-run remove athena/assistant"
 adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.0.yampkg"
 ```
 
-Затем `rescan` и `service/start`. Настройки и обученные слова лежат в
+Затем `rescan` и `service/enable` (это и включает, и запускает плагин). Настройки и обученные слова лежат в
 `/data/quazar/luna/data/plugins/plugin-state/athena.assistant/` и при
 переустановке пакета не удаляются.
 
