@@ -38,7 +38,6 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	// Never leave the matrix lit when the turn exits for any reason.
 	defer func() {
 		if cfg.LEDFeedback {
-			_ = lc.RingOff(context.Background())
 			clearLEDFramebuffer()
 		}
 	}()

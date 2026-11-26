@@ -182,18 +182,15 @@ func (d *Daemon) startLEDPattern(ctx context.Context, lc *luna.Client, path stri
 	return show
 }
 
-func (s *ledShow) stop(lc *luna.Client) {
+func (s *ledShow) stop(_ *luna.Client) {
 	if s == nil {
 		return
 	}
 	s.stopOnce.Do(func() {
 		s.cancel()
 		<-s.done
-		if err := lc.RingOff(context.Background()); err != nil {
-			log.Printf("led: ring off: %v", err)
-		}
-		// RingOff can acknowledge without clearing Station 2's framebuffer,
-		// so always blank the panel on every animation stop.
+		// Native maind can repaint between clear and Luna's ownership check,
+		// so all Station 2 LED writes go straight to the RGBW framebuffer.
 		clearLEDFramebuffer()
 	})
 }
@@ -213,6 +210,45 @@ func clearLEDFramebuffer() {
 	}
 }
 
+// writeLEDFramebuffer paints the Station 2 RGBW matrix directly. Luna refuses
+// to write when native firmware owns the framebuffer, and maind can repaint
+// between our clear and Luna's ownership check. Direct writes are race-free.
+func writeLEDFramebuffer(colors []string) error {
+	if len(colors) == 0 {
+		return nil
+	}
+	f, err := os.OpenFile("/dev/fb0", os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	buf := make([]byte, ledCount*4)
+	for i := 0; i < ledCount; i++ {
+		c := colors[0]
+		if len(colors) > 1 {
+			if i >= len(colors) {
+				c = "#000000"
+			} else {
+				c = colors[i]
+			}
+		}
+		if len(c) != 7 || c[0] != '#' {
+			continue
+		}
+		r, err1 := strconv.ParseUint(c[1:3], 16, 8)
+		g, err2 := strconv.ParseUint(c[3:5], 16, 8)
+		b, err3 := strconv.ParseUint(c[5:7], 16, 8)
+		if err1 != nil || err2 != nil || err3 != nil {
+			continue
+		}
+		buf[i*4] = uint8(r)
+		buf[i*4+1] = uint8(g)
+		buf[i*4+2] = uint8(b)
+	}
+	_, err = f.Write(buf)
+	return err
+}
+
 // pulseErrorLED shows one red heartbeat for 1.5 s and always turns the panel
 // off. It is used for explicit failures and cancellations, not for silence
 // (nobody spoke) and not for a normal end of the conversation.
@@ -225,7 +261,7 @@ func pulseErrorLED(ctx context.Context, lc *luna.Client) {
 		// single heartbeat rather than three discrete blinks.
 		level := 0.55 - 0.30*math.Cos(2*math.Pi*t)
 		colors := scaleLEDColors([]string{ledErrorColor}, level)
-		if err := lc.SetRing(ctx, colors); err != nil {
+		if err := writeLEDFramebuffer(colors); err != nil {
 			log.Printf("led: error pulse: %v", err)
 			break
 		}
@@ -233,7 +269,6 @@ func pulseErrorLED(ctx context.Context, lc *luna.Client) {
 			break
 		}
 	}
-	_ = lc.RingOff(context.Background())
 	clearLEDFramebuffer()
 }
 
@@ -259,7 +294,7 @@ func (d *Daemon) playLEDPattern(ctx context.Context, lc *luna.Client, path strin
 			if ctx.Err() != nil {
 				return
 			}
-			_ = lc.SetRing(ctx, scaleLEDColors([]string{fallback}, ledLevel(level)))
+			_ = writeLEDFramebuffer(scaleLEDColors([]string{fallback}, ledLevel(level)))
 			t := time.NewTimer(100 * time.Millisecond)
 			select {
 			case <-ctx.Done():
@@ -276,8 +311,8 @@ func (d *Daemon) playLEDPattern(ctx context.Context, lc *luna.Client, path strin
 			}
 			colors := fitLEDColors(frame.colors, ledCount)
 			colors = scaleLEDColors(colors, ledLevel(level))
-			if err := lc.SetRing(ctx, colors); err != nil {
-				log.Printf("led: set ring: %v", err)
+			if err := writeLEDFramebuffer(colors); err != nil {
+				log.Printf("led: write fb0: %v", err)
 				return
 			}
 			t := time.NewTimer(frame.delay)

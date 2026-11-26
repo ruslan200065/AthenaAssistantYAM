@@ -35,7 +35,7 @@ func New(baseURL, token string) *Client {
 		BaseURL:  strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		Token:    token,
 		DeviceID: "yandexstation_2",
-		Firmware: "athena-yam 0.2.8",
+		Firmware: "athena-yam 0.2.9",
 		Hardware: "yandexstation_2",
 	}
 }
