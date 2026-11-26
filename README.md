@@ -48,7 +48,7 @@ vqe_0 (16 kHz) ──> AthenaAssistantYAM ──> «Афина»?
 
    ```sh
    ./package.sh
-   # dist/athena-assistant-0.2.5.yampkg
+   # dist/athena-assistant-0.2.6.yampkg
    ```
 
    Для сборки нужны Go и Python 3 с `zstandard`. На Windows удобно собрать
@@ -64,8 +64,8 @@ vqe_0 (16 kHz) ──> AthenaAssistantYAM ──> «Афина»?
 2. Скопируйте пакет на станцию и установите:
 
    ```sh
-   adb push dist/athena-assistant-0.2.5.yampkg /data/local/tmp/
-   adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.5.yampkg"
+   adb push dist/athena-assistant-0.2.6.yampkg /data/local/tmp/
+   adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.6.yampkg"
    ```
 
    Postinstall только копирует плагин в
@@ -160,8 +160,10 @@ wake word. Штатная Алиса ведёт себя так же, когда
   команда идёт через Athena Device Gateway. Штатный диалог не стартует и не
   отменяется.
 - LED-матрица показывает одну из трёх инвертированных анимаций Алисы только на
-  время цикла Афины (слушание, размышление, ответ) и гарантированно гасится
-  после финального ответа, таймаута, ошибки или `utterance.drop`.
+  время цикла Афины (слушание, размышление, ответ). При явной ошибке или
+  отмене она мигает красным 1.5 с, затем гасится. В конце любого сценария
+  (финальный ответ, таймаут, ошибка, `utterance.drop`) матрица гарантированно
+  выключается.
 
 ## Обновление
 
@@ -169,7 +171,7 @@ wake word. Штатная Алиса ведёт себя так же, когда
 
 ```sh
 adb shell "/data/yam/bin/yam-run remove athena/assistant"
-adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.5.yampkg"
+adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.6.yampkg"
 ```
 
 Затем `rescan` и `service/enable` (это и включает, и запускает плагин). Настройки и обученные слова лежат в

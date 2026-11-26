@@ -25,6 +25,9 @@ const (
 	ledHueListen     = 0.33 // green
 	ledHueThink      = 0.60 // blue
 	ledHueSpeak      = 0.08 // warm orange
+	ledErrorColor    = "#FF2020"
+	ledErrorPulse    = 250 * time.Millisecond
+	ledErrorPulses   = 3
 )
 
 type ledFrame struct {
@@ -188,8 +191,10 @@ func (s *ledShow) stop(lc *luna.Client) {
 		<-s.done
 		if err := lc.RingOff(context.Background()); err != nil {
 			log.Printf("led: ring off: %v", err)
-			clearLEDFramebuffer()
 		}
+		// RingOff can acknowledge without clearing Station 2's framebuffer,
+		// so always blank the panel on every animation stop.
+		clearLEDFramebuffer()
 	})
 }
 
@@ -205,6 +210,40 @@ func clearLEDFramebuffer() {
 	defer f.Close()
 	if _, err := f.Write(make([]byte, ledCount*4)); err != nil {
 		log.Printf("led: clear fb0: %v", err)
+	}
+}
+
+// flashErrorLED blinks the panel red for 1.5 s and always turns it off.
+// It is used for explicit failures and cancellations, not for a normal
+// end of the conversation.
+func flashErrorLED(ctx context.Context, lc *luna.Client) {
+	for i := 0; i < ledErrorPulses; i++ {
+		clearLEDFramebuffer()
+		if err := lc.SetRing(ctx, []string{ledErrorColor}); err != nil {
+			log.Printf("led: error flash: %v", err)
+			break
+		}
+		if !sleepLED(ctx, ledErrorPulse) {
+			break
+		}
+		_ = lc.RingOff(ctx)
+		clearLEDFramebuffer()
+		if !sleepLED(ctx, ledErrorPulse) {
+			break
+		}
+	}
+	_ = lc.RingOff(context.Background())
+	clearLEDFramebuffer()
+}
+
+func sleepLED(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }
 

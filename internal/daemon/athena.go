@@ -35,6 +35,14 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	cfg := d.athenaSettings()
 	lc := luna.New(cfg.LunaURL)
 
+	// Never leave the matrix lit when the turn exits for any reason.
+	defer func() {
+		if cfg.LEDFeedback {
+			_ = lc.RingOff(context.Background())
+			clearLEDFramebuffer()
+		}
+	}()
+
 	// The LED context is independent of a single turn: it is stopped
 	// explicitly before TTS, restarted for every follow-up, and cancelled on
 	// every exit path.
@@ -68,7 +76,7 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	gw := gateway.New(cfg.AthenaURL, cfg.AthenaToken)
 	sess, err := gw.Open(ctx)
 	if err != nil {
-		d.playSound(context.Background(), lc, "error")
+		d.athenaError(ctx, lc, cfg)
 		return err
 	}
 	defer sess.Close()
@@ -86,12 +94,12 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	pcm, err := d.captureCommand(ctx, maxCmd, wakeSettle, 4*time.Second, d.setMicLevel)
 	stopListening()
 	if err != nil {
-		d.playSound(context.Background(), lc, "error")
+		d.athenaError(ctx, lc, cfg)
 		return err
 	}
 	if len(pcm) == 0 {
 		log.Printf("athena: no speech recognized")
-		d.playSound(context.Background(), lc, "error")
+		d.athenaError(ctx, lc, cfg)
 		return nil
 	}
 	log.Printf("athena: captured %.1f s, sending to gateway", float64(len(pcm))/float64(16000))
@@ -100,7 +108,7 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	reply, err := sess.Turn(ctx, pcm, false, 0)
 	stopThinking()
 	if err != nil {
-		d.playSound(context.Background(), lc, "error")
+		d.athenaError(ctx, lc, cfg)
 		return err
 	}
 
@@ -108,7 +116,7 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 		log.Printf("athena: heard request, reply %q (listen=%v end=%v)", reply.Text, reply.Listen, reply.End)
 		if strings.TrimSpace(reply.Text) != "" {
 			if _, err := d.speakReply(ctx, cfg, reply.Text); err != nil {
-				d.playSound(context.Background(), lc, "error")
+				d.athenaError(ctx, lc, cfg)
 				return err
 			}
 		}
@@ -152,6 +160,7 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("athena: follow-up capture: %v", err)
+				d.athenaError(ctx, lc, cfg)
 			}
 			_ = sess.EndConversation(context.Background(), reply.ConversationID)
 			return nil
@@ -173,9 +182,19 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 			} else {
 				log.Printf("athena: follow-up: %v", err)
 			}
+			d.athenaError(ctx, lc, cfg)
 			_ = sess.EndConversation(context.Background(), convID)
 			return nil
 		}
+	}
+}
+
+// athenaError reports an explicit failure or rejection: the stock error sound
+// plus a red blink for 1.5 s, then the panel is turned off.
+func (d *Daemon) athenaError(ctx context.Context, lc *luna.Client, cfg Settings) {
+	d.playSound(context.Background(), lc, "error")
+	if cfg.LEDFeedback {
+		flashErrorLED(ctx, lc)
 	}
 }
 
