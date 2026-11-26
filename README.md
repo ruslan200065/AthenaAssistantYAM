@@ -16,16 +16,18 @@
 ```
 vqe_0 (16 kHz) ──> AthenaAssistantYAM ──> «Афина»?
                                       │
-                                      ├─ POST Luna /api/alice/recognize
-                                      │  (тихое распознавание, без диалога Алисы)
-                                      ├─ POST Athena /api/device/ask
+                                      ├─ захват команды (raw PCM, без усиления)
+                                      ├─ Athena Device Gateway /api/device/ws
+                                      │  (ASR + ответ, без диалога Алисы)
                                       ├─ POST Athena /api/device/tts
                                       └─ POST Luna /api/audio/jobs (WAV)
 ```
 
-`/api/alice/recognize` — это режим распознавания без запуска облачного диалога
-Алисы. Поэтому Афина не перебивает Алису и не отменяет её запросы. Нативное
-wake word «Алиса» остаётся полностью штатным.
+Команда уходит в собственный Device Gateway Афины, а не в ASR Алисы. Поэтому
+Афина не запускает и не отменяет штатный диалог, а нативное wake word «Алиса»
+остаётся полностью штатным. При wake Афина проигрывает инвертированную копию
+родной анимации `alice_listening.led` (фиолетовый становится зелёным); файлы
+анимации только читаются и не изменяются.
 
 ## Требования
 
@@ -41,7 +43,7 @@ wake word «Алиса» остаётся полностью штатным.
 
    ```sh
    ./package.sh
-   # dist/athena-assistant-0.2.2.yampkg
+   # dist/athena-assistant-0.2.3.yampkg
    ```
 
    Для сборки нужны Go и Python 3 с `zstandard`. На Windows удобно собрать
@@ -57,8 +59,8 @@ wake word «Алиса» остаётся полностью штатным.
 2. Скопируйте пакет на станцию и установите:
 
    ```sh
-   adb push dist/athena-assistant-0.2.2.yampkg /data/local/tmp/
-   adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.2.yampkg"
+   adb push dist/athena-assistant-0.2.3.yampkg /data/local/tmp/
+   adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.3.yampkg"
    ```
 
    Postinstall только копирует плагин в
@@ -149,10 +151,11 @@ wake word. Штатная Алиса ведёт себя так же, когда
   замена `S99luna`. Приложению это не нужно.
 - Не меняйте `aliced.uniProxyUrl` и конфиг `quasar-bridge`.
 - Плагин читает `vqe_0` как второй подписчик, не забирая поток у Quasar.
-- Для Афины не вызывается `START_CONVERSATION`; используется только
-  `recognize`, поэтому штатный диалог Алисы не стартует и не отменяется.
-- LED-кольцо подсвечивается синим только на время цикла Афины и затем
-  возвращается в штатный режим Luna.
+- Для Афины не вызывается `START_CONVERSATION` и не используется ASR Алисы:
+  команда идёт через Athena Device Gateway. Штатный диалог не стартует и не
+  отменяется.
+- LED-матрица показывает инвертированную анимацию Алисы только на время цикла
+  Афины и затем возвращается в штатный режим Luna.
 
 ## Обновление
 
@@ -160,7 +163,7 @@ wake word. Штатная Алиса ведёт себя так же, когда
 
 ```sh
 adb shell "/data/yam/bin/yam-run remove athena/assistant"
-adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.2.yampkg"
+adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.3.yampkg"
 ```
 
 Затем `rescan` и `service/enable` (это и включает, и запускает плагин). Настройки и обученные слова лежат в

@@ -34,21 +34,23 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	cfg := d.athenaSettings()
 	lc := luna.New(cfg.LunaURL)
 	if cfg.LEDFeedback {
-		if err := lc.SetRing(ctx, []string{"#2E7DFF"}); err == nil {
-			defer lc.RingOff(context.Background())
-		}
+		ledCtx, ledCancel := context.WithCancel(ctx)
+		ledDone := make(chan struct{})
+		go func() {
+			defer close(ledDone)
+			d.playLEDPattern(ledCtx, lc, ledListenPattern)
+		}()
+		defer func() {
+			ledCancel()
+			<-ledDone
+			_ = lc.RingOff(context.Background())
+		}()
 	}
 
-	// Stock wake chime. Its length is also the pause before the command
-	// capture starts, so the station does not record its own signal.
-	wakeFor := d.playSound(ctx, lc, "wake")
-	if wakeFor > 200*time.Millisecond {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(wakeFor + 150*time.Millisecond):
-		}
-	}
+	// Stock wake chime. Capture starts immediately, because people often
+	// start the command while the chime is still playing; the audio is
+	// buffered during the chime and only then fed to the VAD.
+	d.playSound(ctx, lc, "wake")
 
 	maxCmd := time.Duration(cfg.RecognizeTimeoutSeconds) * time.Second
 	if maxCmd < 5*time.Second {
@@ -57,7 +59,7 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	if maxCmd > 20*time.Second {
 		maxCmd = 20 * time.Second
 	}
-	pcm, err := d.captureCommand(ctx, maxCmd)
+	pcm, err := d.captureCommand(ctx, maxCmd, wakeSettle)
 	if err != nil {
 		d.playSound(context.Background(), lc, "error")
 		return err

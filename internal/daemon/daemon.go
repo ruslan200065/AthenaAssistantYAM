@@ -107,6 +107,7 @@ type Daemon struct {
 	name     cachedName
 	events   subscribers[hitEvent]
 	audio    subscribers[[]int16]
+	rawAudio subscribers[[]int16]
 
 	// Playback guard: while our beep/TTS is sounding, the detector must not
 	// hear the station itself. The detector is reset on both edges so a
@@ -406,6 +407,10 @@ func (d *Daemon) onAudio(raw []int16) {
 	d.mu.Unlock()
 
 	d.audio.publish(pcm)
+	// Command capture must use the unamplified stream: the detector gain is
+	// tuned for the KWS frontend and clips normal speech, which makes cloud
+	// STT fail. Keep both buses so the detector stays calibrated.
+	d.rawAudio.publish(append([]int16(nil), raw...))
 
 	// Actions run outside the lock: a webhook or a hook must never stall
 	// audio processing.
