@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ruslan200065/AthenaAssistantYAM/internal/athena"
+	"github.com/ruslan200065/AthenaAssistantYAM/internal/gateway"
 	"github.com/ruslan200065/AthenaAssistantYAM/internal/luna"
 	"github.com/ruslan200065/AthenaAssistantYAM/internal/wav"
 )
@@ -21,8 +22,9 @@ func (d *Daemon) athenaSettings() Settings {
 	return d.settings
 }
 
-// runAthena handles one wake-word hit without touching native Alice: Luna
-// performs recognition-only capture, Athena answers, and Luna plays the WAV.
+// runAthena handles one wake-word hit without touching native Alice: our own
+// detector heard the word, the gateway transcribes the command and answers,
+// and Luna plays the WAV. Native Alice keeps her own wake word and dialog.
 func (d *Daemon) runAthena(ctx context.Context) error {
 	if !d.athenaMu.TryLock() {
 		return errAthenaBusy
@@ -36,27 +38,53 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 			defer lc.RingOff(context.Background())
 		}
 	}
-	// Acknowledge the wake word immediately. Recognition runs in parallel, so
-	// the user can start the command right after the beep.
-	d.muteDetection(1200 * time.Millisecond)
-	go func() {
-		ackCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		defer cancel()
-		if err := lc.PlayWAV(ackCtx, wav.Encode(ackTone(), 48000)); err != nil {
-			log.Printf("athena: ack sound: %v", err)
+
+	// Stock wake chime. Its length is also the pause before the command
+	// capture starts, so the station does not record its own signal.
+	wakeFor := d.playSound(ctx, lc, "wake")
+	if wakeFor > 200*time.Millisecond {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wakeFor + 150*time.Millisecond):
 		}
-	}()
-	timeout := time.Duration(cfg.RecognizeTimeoutSeconds) * time.Second
-	text, err := lc.Recognize(ctx, timeout)
+	}
+
+	maxCmd := time.Duration(cfg.RecognizeTimeoutSeconds) * time.Second
+	if maxCmd < 5*time.Second {
+		maxCmd = 5 * time.Second
+	}
+	if maxCmd > 20*time.Second {
+		maxCmd = 20 * time.Second
+	}
+	pcm, err := d.captureCommand(ctx, maxCmd)
 	if err != nil {
+		d.playSound(context.Background(), lc, "error")
 		return err
 	}
-	if strings.TrimSpace(text) == "" {
+	if len(pcm) == 0 {
 		log.Printf("athena: no speech recognized")
+		d.playSound(context.Background(), lc, "error")
 		return nil
 	}
-	log.Printf("athena: heard %q", text)
-	return d.askAthena(ctx, cfg, text)
+	log.Printf("athena: captured %.1f s, sending to gateway", float64(len(pcm))/float64(16000))
+
+	gw := gateway.New(cfg.AthenaURL, cfg.AthenaToken)
+	reply, err := gw.Ask(ctx, pcm)
+	if err != nil {
+		d.playSound(context.Background(), lc, "error")
+		return err
+	}
+	if strings.TrimSpace(reply) == "" {
+		d.playSound(context.Background(), lc, "error")
+		return errors.New("athena: пустой ответ")
+	}
+	log.Printf("athena: heard request, reply %q", reply)
+	if err := d.speakReply(ctx, cfg, reply); err != nil {
+		d.playSound(context.Background(), lc, "error")
+		return err
+	}
+	return nil
 }
 
 // AskAthena is used by the test endpoint: it bypasses wake-word recognition.
@@ -86,10 +114,15 @@ func (d *Daemon) askAthena(ctx context.Context, cfg Settings, text string) error
 		return nil
 	}
 	log.Printf("athena: reply %q (%.0f ms)", resp.Reply, float64(resp.LatencyMS))
+	return d.speakReply(ctx, cfg, resp.Reply)
+}
+
+func (d *Daemon) speakReply(ctx context.Context, cfg Settings, reply string) error {
 	if cfg.MuteReplies {
 		return nil
 	}
-	pcm, rate, err := ac.TTS(ctx, resp.Reply, cfg.TTSVoice)
+	ac := athena.New(cfg.AthenaURL, cfg.AthenaToken)
+	pcm, rate, err := ac.TTS(ctx, reply, cfg.TTSVoice)
 	if err != nil {
 		return err
 	}

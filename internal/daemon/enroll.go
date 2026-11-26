@@ -23,6 +23,7 @@ type enrollment struct {
 	Takes   [][]int16
 	Ambient []int16
 	Speech  []int16
+	Noise   []int16 // long background recording (TV, street, room hum)
 	Last    []int16 // most recent take, kept or not, for "listen to it"
 }
 
@@ -30,6 +31,7 @@ const (
 	takeSecs    = 3.0
 	takePreSecs = 0.3
 	ambientSecs = 8.0
+	noiseSecs   = 120.0
 	minTakes    = 6
 )
 
@@ -58,6 +60,9 @@ func (d *Daemon) startEnroll(name string) (*enrollment, error) {
 	}
 	if s, err := wav.ReadFile(filepath.Join(dir, "speech.wav"), kws.SampleRate); err == nil {
 		e.Speech = s
+	}
+	if n, err := wav.ReadFile(filepath.Join(dir, "noise.wav"), kws.SampleRate); err == nil {
+		e.Noise = n
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -165,6 +170,24 @@ func (d *Daemon) recordSpeech(ctx context.Context, secs float64) (float64, error
 	return dbfs(pcm), nil
 }
 
+// recordNoise records a long background sample. Unlike speech.wav this is
+// meant for the TV, street or appliance noise that causes false triggers; it
+// is used as a hard negative and as an augmentation background.
+func (d *Daemon) recordNoise(ctx context.Context, secs float64) (float64, error) {
+	e, err := d.currentEnroll()
+	if err != nil {
+		return 0, err
+	}
+	pcm, err := d.record(ctx, min(max(secs, 30), 180), 0)
+	if err != nil {
+		return 0, err
+	}
+	d.mu.Lock()
+	e.Noise = pcm
+	d.mu.Unlock()
+	return dbfs(pcm), nil
+}
+
 func (d *Daemon) deleteTake(i int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -196,6 +219,11 @@ func (d *Daemon) saveEnrollment(e *enrollment) error {
 	}
 	if len(e.Speech) > 0 {
 		if err := wav.WriteFile(filepath.Join(dir, "speech.wav"), e.Speech, kws.SampleRate); err != nil {
+			return err
+		}
+	}
+	if len(e.Noise) > 0 {
+		if err := wav.WriteFile(filepath.Join(dir, "noise.wav"), e.Noise, kws.SampleRate); err != nil {
 			return err
 		}
 	}
@@ -238,6 +266,7 @@ func (d *Daemon) startTraining(id string) error {
 		return err
 	}
 	en.Speech, _ = wav.ReadFile(filepath.Join(dir, "speech.wav"), kws.SampleRate)
+	en.Noise, _ = wav.ReadFile(filepath.Join(dir, "noise.wav"), kws.SampleRate)
 	falses, _ := filepath.Glob(filepath.Join(dir, "false-*.wav"))
 	if en.False, err = readWAVs(falses); err != nil {
 		return err

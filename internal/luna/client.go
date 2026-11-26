@@ -78,6 +78,82 @@ func (c *Client) Recognize(ctx context.Context, timeout time.Duration) (string, 
 	return strings.TrimSpace(ev.Transcript), nil
 }
 
+// Listen waits for the native Alice voice event after quasar.CallAlice starts
+// a conversation. The native request is started with ignoreAnswer, so Alice
+// does not speak over Athena. Luna's command endpoint returns final events
+// only; local command-spotter events are skipped until a voice phrase arrives.
+func (c *Client) Listen(ctx context.Context, timeout time.Duration) (string, error) {
+	if c.BaseURL == "" {
+		return "", errors.New("luna: base URL is empty")
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return "", nil
+		}
+		ms := int(remaining / time.Millisecond)
+		if ms < 1000 {
+			ms = 1000
+		}
+		if ms > 60000 {
+			ms = 60000
+		}
+		q := url.Values{}
+		q.Set("timeout_ms", strconv.Itoa(ms))
+		q.Set("empty_on_timeout", "true")
+		u := c.BaseURL + "/api/alice/command?" + q.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader([]byte("{}")))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("luna listen: %w", err)
+		}
+		if resp.StatusCode == http.StatusNoContent {
+			resp.Body.Close()
+			return "", nil
+		}
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			return "", fmt.Errorf("luna listen: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		}
+		var ev speechEvent
+		err = json.NewDecoder(resp.Body).Decode(&ev)
+		resp.Body.Close()
+		if err != nil {
+			return "", fmt.Errorf("luna listen: %w", err)
+		}
+		if ev.Source != "" && ev.Source != "voice" {
+			continue
+		}
+		if text := strings.TrimSpace(ev.Transcript); text != "" {
+			return text, nil
+		}
+	}
+}
+
+// CancelAlice aborts the current native Alice dialog, if any.
+func (c *Client) CancelAlice(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/api/alice/speech/cancel", bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("luna cancel: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // PlayWAV queues a PCM WAV on the station's audio output. Luna requires an
 // Idempotency-Key and rejects a second active job with 409.
 func (c *Client) PlayWAV(ctx context.Context, wav []byte) error {

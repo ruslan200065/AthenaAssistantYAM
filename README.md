@@ -41,7 +41,7 @@ wake word «Алиса» остаётся полностью штатным.
 
    ```sh
    ./package.sh
-   # dist/athena-assistant-0.2.1.yampkg
+   # dist/athena-assistant-0.2.2.yampkg
    ```
 
    Для сборки нужны Go и Python 3 с `zstandard`. На Windows удобно собрать
@@ -57,8 +57,8 @@ wake word «Алиса» остаётся полностью штатным.
 2. Скопируйте пакет на станцию и установите:
 
    ```sh
-   adb push dist/athena-assistant-0.2.1.yampkg /data/local/tmp/
-   adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.1.yampkg"
+   adb push dist/athena-assistant-0.2.2.yampkg /data/local/tmp/
+   adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.2.yampkg"
    ```
 
    Postinstall только копирует плагин в
@@ -98,9 +98,10 @@ wake word «Алиса» остаётся полностью штатным.
    расстояний и под разными углами к станции. Чем разнообразнее записи, тем
    меньше ложных срабатываний.
 4. Запишите 8 секунд тишины/фона комнаты.
-5. Если в комнате работает телевизор или радио, запишите 1–2 минуты такого
-   фона как negativo: в UI отметьте ложные срабатывания или добавьте запись
-   фона. Это самый эффективный способ убрать реакцию на чужую речь.
+5. Если в комнате работает телевизор, радио или улица слышна, нажмите
+   «Записать шум 2 минуты» и оставьте обычный фон. Это самый эффективный способ
+   убрать реакцию на чужую речь. Отдельные ложные срабатывания тоже можно
+   отмечать в UI — они попадут в обучение как негативы.
 6. Запустите обучение и дождитесь появления модели.
 
 Модель сохраняется в `plugin-state` и не перезаписывается при обновлении пакета.
@@ -137,6 +138,7 @@ wake word. Штатная Алиса ведёт себя так же, когда
 | `POST` | `/api/enroll/start` | начать обучение `{ "name": "Афина" }` |
 | `POST` | `/api/enroll/take` | записать один пример |
 | `POST` | `/api/enroll/ambient` | записать фон |
+| `POST` | `/api/enroll/noise?secs=120` | записать длинный шум/телевизор |
 | `POST` | `/api/enroll/train` | обучить модель |
 
 Полный набор маршрутов обучения и хитов — в UI и в `internal/daemon/api.go`.
@@ -158,7 +160,7 @@ wake word. Штатная Алиса ведёт себя так же, когда
 
 ```sh
 adb shell "/data/yam/bin/yam-run remove athena/assistant"
-adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.1.yampkg"
+adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.2.yampkg"
 ```
 
 Затем `rescan` и `service/enable` (это и включает, и запускает плагин). Настройки и обученные слова лежат в

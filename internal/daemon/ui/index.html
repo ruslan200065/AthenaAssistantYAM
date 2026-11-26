@@ -90,8 +90,13 @@
         <div class="reading" style="margin-top:8px">Сегодня обещали тёплую погоду, поэтому мы решили погулять в парке. Вечером нужно купить хлеб, молоко и что-нибудь к чаю. Позвоню маме и спрошу, как у неё дела. Завтра рано вставать, так что лягу пораньше и почитаю книгу.</div>
         <div class="row" style="margin-top:8px"><button id="speechbtn">Читать 20 секунд</button><span id="speechmsg" class="msg"></span></div>
       </div>
+      <div class="step" id="s-noise">
+        <b>4. Фон и шум (по желанию)</b>
+        <div class="muted">2 минуты записи телевизора, музыки или уличного шума, который обычно стоит рядом. Так станция перестанет путать слово с похожей речью из телевизора.</div>
+        <div class="row" style="margin-top:8px"><button id="noisebtn">Записать шум 2 минуты</button><span id="noisemsg" class="msg"></span></div>
+      </div>
       <div class="step" id="s-train">
-        <b>4. Обучение</b>
+        <b>5. Обучение</b>
         <div class="muted">Модель обучается прямо на станции, около 2–3 минут. Страницу можно закрыть.</div>
         <div class="row" style="margin-top:8px"><button class="primary" id="trainbtn">Обучить</button><span id="trainmsg" class="msg"></span></div>
       </div>
@@ -200,14 +205,16 @@ function renderEnroll(s) {
   $("s-ambient").className = "step " + (e.has_ambient ? "done" : "cur");
   $("s-takes").className = "step " + (e.takes.length >= e.min_takes ? "done" : (e.has_ambient ? "cur" : ""));
   $("s-speech").className = "step " + (e.speech_secs > 0 ? "done" : "");
+  $("s-noise").className = "step " + (e.noise_secs > 0 ? "done" : "");
   $("s-train").className = "step " + (e.takes.length >= e.min_takes && e.has_ambient ? "cur" : "");
   $("trainbtn").disabled = busy || e.takes.length < e.min_takes || !e.has_ambient;
   if (e.has_ambient && !$("ambmsg").textContent) msg($("ambmsg"), "записано", "ok");
   if (e.speech_secs > 0 && !$("speechmsg").textContent) msg($("speechmsg"), "записано", "ok");
+  if (e.noise_secs > 0 && !$("noisemsg").textContent) msg($("noisemsg"), `записано ${e.noise_secs.toFixed(0)} с`, "ok");
   $("takes").innerHTML = e.takes.map((d, i) => `<span class="take">#${i + 1} ${d.toFixed(2)} с
      <button title="Послушать" data-play="/api/enroll/take/${i}">▶</button>
      <button title="Удалить" data-deltake="${i}">✕</button></span>`).join("");
-  for (const b of ["ambbtn", "takebtn", "speechbtn"]) $(b).disabled = busy;
+  for (const b of ["ambbtn", "takebtn", "speechbtn", "noisebtn"]) $(b).disabled = busy;
 }
 
 function renderTrain(s) {
@@ -255,7 +262,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 $("newbtn").onclick = () => run(null, async () => {
   const name = prompt("Какое слово будет звать станцию? Например: Джарвис, Компьютер, Станция");
   if (!name) return;
-  msg($("ambmsg"), ""); msg($("speechmsg"), ""); msg($("takemsg"), ""); $("say").textContent = "";
+  msg($("ambmsg"), ""); msg($("speechmsg"), ""); msg($("noisemsg"), ""); msg($("takemsg"), ""); $("say").textContent = "";
   await api("POST", "/api/enroll/start", { name: name.trim() });
 });
 $("wcancel").onclick = () => run(null, async () => { if (confirm("Бросить запись этого слова?")) await api("POST", "/api/enroll/cancel"); });
@@ -277,6 +284,11 @@ $("speechbtn").onclick = () => run($("speechbtn"), async () => {
   msg($("speechmsg"), "читайте вслух… 20 секунд");
   await api("POST", "/api/enroll/speech?secs=20");
   msg($("speechmsg"), "записано", "ok");
+});
+$("noisebtn").onclick = () => run($("noisebtn"), async () => {
+  msg($("noisemsg"), "пишется шум… 2 минуты, не выключайте");
+  await api("POST", "/api/enroll/noise?secs=120");
+  msg($("noisemsg"), "записано 120 с", "ok");
 });
 $("trainbtn").onclick = () => run($("trainbtn"), async () => {
   await api("POST", "/api/enroll/train");

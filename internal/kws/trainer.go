@@ -86,6 +86,7 @@ type Enrollment struct {
 	Takes   [][]int16 // one utterance of the word per take (with silence around)
 	Ambient []int16   // room with nobody talking to the station
 	Speech  []int16   // the user talking normally (hard negatives)
+	Noise   []int16   // long room/TV/street noise recording (hard negatives)
 	False   [][]int16 // audio that wrongly triggered this word earlier
 }
 
@@ -166,7 +167,7 @@ func TrainWord(name string, en Enrollment, neg *Negatives, seed uint64, progress
 		return nil, fmt.Errorf("kws: only %d usable takes, need at least 3", len(words))
 	}
 	var backgrounds [][]int16
-	for _, b := range [][]int16{en.Ambient, en.Speech} {
+	for _, b := range [][]int16{en.Ambient, en.Speech, en.Noise} {
 		if len(b) >= SampleRate {
 			backgrounds = append(backgrounds, b)
 		}
@@ -212,8 +213,9 @@ func TrainWord(name string, en Enrollment, neg *Negatives, seed uint64, progress
 		test bool
 	}
 	sigs := make([]sig, len(jobs))
-	// Stream layout: augmented takes, ambient, speech, false alarms.
-	falseAt := len(sigs) + 2
+	// Stream layout: augmented takes, one stream per recorded background
+	// (ambient, speech, noise), false alarms.
+	falseAt := len(sigs) + len(backgrounds)
 	streams := make([]Stream, falseAt+len(en.False))
 	var done int
 	var mu sync.Mutex
@@ -224,10 +226,8 @@ func TrainWord(name string, en Enrollment, neg *Negatives, seed uint64, progress
 			pcm, end := Augment(r, jobs[i].word, backgrounds, preCtxSamp, postSamp)
 			sigs[i] = sig{end, jobs[i].test}
 			streams[i] = Embed(f, pcm)
-		case i == len(sigs):
-			streams[i] = Embed(f, en.Ambient)
-		case i == len(sigs)+1:
-			streams[i] = Embed(f, en.Speech)
+		case i < falseAt:
+			streams[i] = Embed(f, backgrounds[i-len(sigs)])
 		default:
 			// Room audio first so windows ending inside the clip are full.
 			streams[i] = Embed(f, append(segment(r, backgrounds[0], preCtxSamp), en.False[i-falseAt]...))
@@ -272,8 +272,9 @@ func TrainWord(name string, en Enrollment, neg *Negatives, seed uint64, progress
 		}
 		evalStreams = append(evalStreams, s[cut*EmbDim:])
 	}
-	split(streams[len(sigs)], 0.8)
-	split(streams[len(sigs)+1], 0.8)
+	for i := len(sigs); i < falseAt; i++ {
+		split(streams[i], 0.8)
+	}
 	for _, st := range streams[falseAt:] {
 		for e := Ctx - 1; e < st.Len(); e++ {
 			if EmbEnd(e) > preCtxSamp {
@@ -303,8 +304,8 @@ func TrainWord(name string, en Enrollment, neg *Negatives, seed uint64, progress
 			progress("train", float64(ep)/40)
 		},
 	}
-	// Room and own-speech windows are the false alarms that matter most;
-	// make them as likely per epoch as the whole bundled set.
+	// Room, own-speech and noise windows are the false alarms that matter
+	// most; make them as likely per epoch as the whole bundled set.
 	weighted := append([]Sample(nil), negs...)
 	for range max(1, (len(negs)-userNeg)/max(userNeg, 1)/2) {
 		weighted = append(weighted, negs[:userNeg]...)

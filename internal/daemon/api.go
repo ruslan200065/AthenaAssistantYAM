@@ -42,6 +42,7 @@ type enrollView struct {
 	Takes      []float64 `json:"takes"` // detected word length per take
 	HasAmbient bool      `json:"has_ambient"`
 	SpeechSecs float64   `json:"speech_secs"`
+	NoiseSecs  float64   `json:"noise_secs"`
 	MinTakes   int       `json:"min_takes"`
 }
 
@@ -90,7 +91,8 @@ func (d *Daemon) state() stateView {
 	}
 	if e := d.enroll; e != nil {
 		ev := &enrollView{Name: e.Name, HasAmbient: len(e.Ambient) > 0, MinTakes: minTakes,
-			SpeechSecs: float64(len(e.Speech)) / kws.SampleRate, Takes: []float64{}}
+			SpeechSecs: float64(len(e.Speech)) / kws.SampleRate,
+			NoiseSecs:  float64(len(e.Noise)) / kws.SampleRate, Takes: []float64{}}
 		for _, t := range e.Takes {
 			s, end, _ := kws.FindSpeech(t)
 			ev.Takes = append(ev.Takes, float64(end-s)/kws.SampleRate)
@@ -379,6 +381,18 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("POST /api/enroll/speech", func(w http.ResponseWriter, r *http.Request) {
 		secs, _ := strconv.ParseFloat(r.URL.Query().Get("secs"), 64)
 		level, err := d.recordSpeech(r.Context(), secs)
+		if err != nil {
+			httpErr(w, err)
+			return
+		}
+		writeJSON(w, map[string]float64{"level": level})
+	})
+	mux.HandleFunc("POST /api/enroll/noise", func(w http.ResponseWriter, r *http.Request) {
+		secs, _ := strconv.ParseFloat(r.URL.Query().Get("secs"), 64)
+		if secs == 0 {
+			secs = noiseSecs
+		}
+		level, err := d.recordNoise(r.Context(), secs)
 		if err != nil {
 			httpErr(w, err)
 			return
