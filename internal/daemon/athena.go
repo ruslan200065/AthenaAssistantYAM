@@ -108,12 +108,20 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 	reply, err := sess.Turn(ctx, pcm, false, 0)
 	stopThinking()
 	if err != nil {
+		if isWakeLost(err) {
+			d.wakeLost(ctx, cfg)
+			return nil
+		}
 		d.athenaError(ctx, lc, cfg)
 		return err
 	}
 	if reply.Early {
 		// The core closed the dialogue before answering. This is a cancellation
-		// (another station answered, intercom, wake lost), not normal silence.
+		// (another station answered, intercom), not normal silence.
+		if reply.Reason == "wake_lost" {
+			d.wakeLost(ctx, cfg)
+			return nil
+		}
 		log.Printf("athena: core ended dialogue early: %s", reply.Reason)
 		d.athenaError(ctx, lc, cfg)
 		return nil
@@ -183,6 +191,10 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 		reply, err = sess.Turn(ctx, pcm, true, convID)
 		stopThinking()
 		if err != nil {
+			if isWakeLost(err) {
+				d.wakeLost(ctx, cfg)
+				return nil
+			}
 			var drop *gateway.DropError
 			if errors.As(err, &drop) {
 				log.Printf("athena: follow-up dropped: %s", drop.Reason)
@@ -193,6 +205,22 @@ func (d *Daemon) runAthena(ctx context.Context) error {
 			_ = sess.EndConversation(context.Background(), convID)
 			return nil
 		}
+	}
+}
+
+// isWakeLost reports that another station claimed the wake word. This is a
+// normal handoff, not an error: the app closes quietly and shows an upward
+// animation instead of the red error heartbeat.
+func isWakeLost(err error) bool {
+	var drop *gateway.DropError
+	return errors.As(err, &drop) && drop.Reason == "wake_lost"
+}
+
+// wakeLost hands the request over to the other station without an error sound.
+func (d *Daemon) wakeLost(ctx context.Context, cfg Settings) {
+	log.Printf("athena: wake_lost: another station accepted the request, handing off")
+	if cfg.LEDFeedback {
+		d.showWakeLostLED(ctx)
 	}
 }
 

@@ -48,7 +48,7 @@ vqe_0 (16 kHz) ──> AthenaAssistantYAM ──> «Афина»?
 
    ```sh
    ./package.sh
-   # dist/athena-assistant-0.2.9.yampkg
+   # dist/athena-assistant-0.2.10.yampkg
    ```
 
    Для сборки нужны Go и Python 3 с `zstandard`. На Windows удобно собрать
@@ -64,8 +64,8 @@ vqe_0 (16 kHz) ──> AthenaAssistantYAM ──> «Афина»?
 2. Скопируйте пакет на станцию и установите:
 
    ```sh
-   adb push dist/athena-assistant-0.2.9.yampkg /data/local/tmp/
-   adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.9.yampkg"
+   adb push dist/athena-assistant-0.2.10.yampkg /data/local/tmp/
+   adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.10.yampkg"
    ```
 
    Postinstall только копирует плагин в
@@ -163,9 +163,11 @@ wake word. Штатная Алиса ведёт себя так же, когда
   время цикла Афины (слушание, размышление, ответ). При явной ошибке или
   отмене она один раз плавно пульсирует красным («heartbeat») около 1.5 с,
   затем гасится. Если никто ничего не сказал, это не ошибка: звук ошибки и
-  красная пульсация не включаются, матрица просто выключается. В конце любого
-  сценария (финальный ответ, таймаут, ошибка, `utterance.drop`) матрица
-  гарантированно выключается.
+  красная пульсация не включаются, матрица просто выключается. Если wake word
+  приняла другая колонка (`wake_lost`), приложение тихо отключается без звука
+  ошибки и показывает голубой огонёк, уходящий вверх — запрос ушёл на другую
+  станцию. В конце любого сценария (финальный ответ, таймаут, ошибка,
+  `utterance.drop`, `wake_lost`) матрица гарантированно выключается.
 
 ## Обновление
 
@@ -173,7 +175,7 @@ wake word. Штатная Алиса ведёт себя так же, когда
 
 ```sh
 adb shell "/data/yam/bin/yam-run remove athena/assistant"
-adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.9.yampkg"
+adb shell "/data/yam/bin/yam-run install -y /data/local/tmp/athena-assistant-0.2.10.yampkg"
 ```
 
 Затем `rescan` и `service/enable` (это и включает, и запускает плагин). Настройки и обученные слова лежат в

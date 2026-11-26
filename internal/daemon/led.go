@@ -28,6 +28,10 @@ const (
 	ledErrorColor    = "#FF2020"
 	ledErrorDuration = 1500 * time.Millisecond
 	ledErrorFrame    = 50 * time.Millisecond
+	ledHandoffColor  = "#40C4FF"
+	ledHandoffTime   = 1400 * time.Millisecond
+	ledHandoffFrame  = 40 * time.Millisecond
+	ledHandoffBand   = 9
 )
 
 type ledFrame struct {
@@ -266,6 +270,38 @@ func pulseErrorLED(ctx context.Context, lc *luna.Client) {
 			break
 		}
 		if !sleepLED(ctx, ledErrorFrame) {
+			break
+		}
+	}
+	clearLEDFramebuffer()
+}
+
+// showWakeLostLED is the quiet handoff animation: a cyan comet travels up the
+// matrix to show that another station accepted the request. It is deliberately
+// not the red error heartbeat and plays no sound.
+func (d *Daemon) showWakeLostLED(ctx context.Context) {
+	clearLEDFramebuffer()
+	frames := int(ledHandoffTime / ledHandoffFrame)
+	for f := 0; f < frames; f++ {
+		t := float64(f) / float64(frames)
+		pos := int(math.Round((1 - t) * float64(ledCount-1)))
+		colors := make([]string, ledCount)
+		for i := range colors {
+			colors[i] = "#000000"
+		}
+		for k := 0; k < ledHandoffBand; k++ {
+			idx := pos + k
+			if idx < 0 || idx >= ledCount {
+				continue
+			}
+			level := 1 - float64(k)/float64(ledHandoffBand)
+			colors[idx] = scaleLEDColors([]string{ledHandoffColor}, 0.15+0.85*level)[0]
+		}
+		if err := writeLEDFramebuffer(colors); err != nil {
+			log.Printf("led: handoff: %v", err)
+			break
+		}
+		if !sleepLED(ctx, ledHandoffFrame) {
 			break
 		}
 	}
