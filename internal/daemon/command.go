@@ -35,9 +35,13 @@ func settleFor(sound time.Duration) time.Duration {
 func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.Duration, onLevel func(float64)) ([]int16, error) {
 	d.mu.Lock()
 	ok := d.audioOK
+	gain := d.settings.Gain
 	d.mu.Unlock()
 	if !ok {
 		return nil, errNoAudio
+	}
+	if gain <= 0 {
+		gain = 1
 	}
 
 	ch := d.rawAudio.add(128)
@@ -50,27 +54,22 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.D
 	buf := make([]int16, 0, kws.SampleRate*20)
 	start := time.Now()
 	settleUntil := start.Add(settle)
-	// waitFor is only used to size the turn budget. The core's value is a
-	// minimum listening window, not a local deadline: the person may need a
-	// few seconds after the chime before starting the command.
+	// wait_for_speech_seconds is the window in which the user may start
+	// speaking. It starts after the wake chime has died down, not while the
+	// station is still playing its own sound, otherwise a third of the core's
+	// window is lost before the microphone is effectively open.
+	waitSpeech := settle + waitFor
 	if waitFor <= 0 {
-		waitFor = 4 * time.Second
+		waitSpeech = settle + 4*time.Second
 	}
-	// Give the person at least ten seconds after the chime to start talking,
-	// even when the core advertises a short three-second wake window.
-	noSpeechUntil := settle + waitFor
-	if noSpeechUntil < 10*time.Second {
-		noSpeechUntil = 10 * time.Second
+	if max < waitSpeech {
+		waitSpeech = max
 	}
 	timer := time.NewTimer(max)
 	defer timer.Stop()
 
-	// This VAD runs on the unamplified microphone bus. The detector gain
-	// (default 32) is tuned for the wake-word frontend; applying it here made
-	// ordinary room noise look like speech at -39 dB, so the command capture
-	// started on noise and sent a random 0.8–1.5 s fragment to STT.
-	noise := 0.002
-	const floorRMS = 0.006
+	noise := 0.003
+	const floorRMS = 0.012
 	speaking := false
 	var silenceMS, voicedMS int
 
@@ -88,7 +87,7 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.D
 				continue
 			}
 			buf = append(buf, pcm...)
-			rms := rmsOf(pcm)
+			rms := rmsOf(pcm) * gain
 			if onLevel != nil {
 				onLevel(math.Min(1, rms*8))
 			}
@@ -96,18 +95,15 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.D
 			if ms <= 0 {
 				continue
 			}
-			thr := math.Max(floorRMS, noise*3.0)
+			thr := math.Max(floorRMS, noise*2.8)
 			if !speaking {
-				if rms < noise*2.0 {
+				if rms < noise*3 {
 					noise = 0.98*noise + 0.02*rms
 				}
 				if rms >= thr {
 					speaking = true
 					voicedMS, silenceMS = ms, 0
-				} else if time.Since(start) >= noSpeechUntil {
-					// The core's wait_for_speech_seconds is a minimum, not a
-					// deadline. Keep a comfortable local window instead of
-					// closing the microphone right as the person starts talking.
+				} else if time.Since(start) >= waitSpeech {
 					return nil, nil
 				}
 				continue
