@@ -50,16 +50,17 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.D
 	buf := make([]int16, 0, kws.SampleRate*20)
 	start := time.Now()
 	settleUntil := start.Add(settle)
-	// wait_for_speech_seconds is the window in which the user may start
-	// speaking. It starts after the wake chime has died down, not while the
-	// station is still playing its own sound, otherwise a third of the core's
-	// window is lost before the microphone is effectively open.
-	waitSpeech := settle + waitFor
+	// waitFor is only used to size the turn budget. The core's value is a
+	// minimum listening window, not a local deadline: the person may need a
+	// few seconds after the chime before starting the command.
 	if waitFor <= 0 {
-		waitSpeech = settle + 4*time.Second
+		waitFor = 4 * time.Second
 	}
-	if max < waitSpeech {
-		waitSpeech = max
+	// Give the person at least ten seconds after the chime to start talking,
+	// even when the core advertises a short three-second wake window.
+	noSpeechUntil := settle + waitFor
+	if noSpeechUntil < 10*time.Second {
+		noSpeechUntil = 10 * time.Second
 	}
 	timer := time.NewTimer(max)
 	defer timer.Stop()
@@ -103,7 +104,10 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.D
 				if rms >= thr {
 					speaking = true
 					voicedMS, silenceMS = ms, 0
-				} else if time.Since(start) >= waitSpeech {
+				} else if time.Since(start) >= noSpeechUntil {
+					// The core's wait_for_speech_seconds is a minimum, not a
+					// deadline. Keep a comfortable local window instead of
+					// closing the microphone right as the person starts talking.
 					return nil, nil
 				}
 				continue
