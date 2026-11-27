@@ -35,13 +35,9 @@ func settleFor(sound time.Duration) time.Duration {
 func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.Duration, onLevel func(float64)) ([]int16, error) {
 	d.mu.Lock()
 	ok := d.audioOK
-	gain := d.settings.Gain
 	d.mu.Unlock()
 	if !ok {
 		return nil, errNoAudio
-	}
-	if gain <= 0 {
-		gain = 1
 	}
 
 	ch := d.rawAudio.add(128)
@@ -68,8 +64,12 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.D
 	timer := time.NewTimer(max)
 	defer timer.Stop()
 
-	noise := 0.003
-	const floorRMS = 0.012
+	// This VAD runs on the unamplified microphone bus. The detector gain
+	// (default 32) is tuned for the wake-word frontend; applying it here made
+	// ordinary room noise look like speech at -39 dB, so the command capture
+	// started on noise and sent a random 0.8–1.5 s fragment to STT.
+	noise := 0.002
+	const floorRMS = 0.006
 	speaking := false
 	var silenceMS, voicedMS int
 
@@ -87,7 +87,7 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.D
 				continue
 			}
 			buf = append(buf, pcm...)
-			rms := rmsOf(pcm) * gain
+			rms := rmsOf(pcm)
 			if onLevel != nil {
 				onLevel(math.Min(1, rms*8))
 			}
@@ -95,9 +95,9 @@ func (d *Daemon) captureCommand(ctx context.Context, max, settle, waitFor time.D
 			if ms <= 0 {
 				continue
 			}
-			thr := math.Max(floorRMS, noise*2.8)
+			thr := math.Max(floorRMS, noise*3.0)
 			if !speaking {
-				if rms < noise*3 {
+				if rms < noise*2.0 {
 					noise = 0.98*noise + 0.02*rms
 				}
 				if rms >= thr {
