@@ -35,7 +35,7 @@ func New(baseURL, token string) *Client {
 		BaseURL:  strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		Token:    token,
 		DeviceID: "yandexstation_2",
-		Firmware: "athena-yam 0.2.10",
+		Firmware: "athena-yam 0.2.21",
 		Hardware: "yandexstation_2",
 	}
 }
@@ -267,6 +267,11 @@ func (s *Session) SendTurn(ctx context.Context, pcm []int16) (*Reply, error) {
 	defer func() { s.pending = "" }()
 
 	// 20 ms at 16 kHz = 320 samples = 640 bytes, the documented chunk size.
+	//
+	// BeginTurn set a short write deadline before audio.start. The user may
+	// speak for much longer than that before we get here, so the inherited
+	// deadline can already be in the past by the time the first audio chunk is
+	// written. Refresh it for every chunk instead of reusing the stale one.
 	const chunk = 320
 	var sum float64
 	for off := 0; off < len(pcm); off += chunk {
@@ -278,6 +283,7 @@ func (s *Session) SendTurn(ctx context.Context, pcm []int16) (*Reply, error) {
 			f := float64(v) / 32768
 			sum += f * f
 		}
+		_ = s.conn.SetWriteDeadline(time.Now().Add(20 * time.Second))
 		if err := s.conn.WriteMessage(websocket.BinaryMessage, buf); err != nil {
 			return nil, fmt.Errorf("gateway: audio: %w", err)
 		}
